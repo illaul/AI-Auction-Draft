@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Auction War Room — AI Auction Draft</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <header id="topbar">
+    <div class="brand">🏈 <span>Auction War Room</span></div>
+    <div id="topStats" class="top-stats">
+      <div class="stat"><label>My Budget</label><b id="statBudget">$200</b></div>
+      <div class="stat"><label>Max Bid</label><b id="statMaxBid">$185</b></div>
+      <div class="stat"><label>Spots Left</label><b id="statSpots">16</b></div>
+      <div class="stat"><label>Inflation</label><b id="statInflation">1.00×</b></div>
+      <div class="stat hammer-stat"><label>The Hammer</label><b id="statHammer">—</b></div>
+    </div>
+    <div class="conn">
+      <span id="connBadge" class="badge badge-manual">MANUAL</span>
+      <button id="btnConnect" class="btn btn-sm">Connect Draft</button>
+      <button id="btnSettings" class="btn btn-sm btn-ghost">⚙︎</button>
+    </div>
+  </header>
+
+  <div id="coachBar" class="coach-bar"></div>
+
+  <main id="layout">
+    <!-- LEFT: player board -->
+    <section id="boardPanel" class="panel">
+      <div class="panel-head">
+        <h2>Player Board</h2>
+        <div class="board-controls">
+          <input id="searchBox" type="search" placeholder="Search players…" />
+          <div id="posFilters" class="pos-filters">
+            <button data-pos="ALL" class="active">All</button>
+            <button data-pos="QB">QB</button>
+            <button data-pos="RB">RB</button>
+            <button data-pos="WR">WR</button>
+            <button data-pos="TE">TE</button>
+            <button data-pos="K">K</button>
+            <button data-pos="DST">D/ST</button>
+          </div>
+          <label class="chk"><input type="checkbox" id="hideDrafted" checked /> Hide drafted</label>
+        </div>
+      </div>
+      <div id="playerBoard" class="player-board"></div>
+    </section>
+
+    <!-- CENTER: draft log + nomination helper -->
+    <section id="centerPanel" class="panel">
+      <div class="panel-head"><h2>Nomination Helper</h2></div>
+      <div id="nomHelper" class="nom-helper"></div>
+      <div class="panel-head log-head">
+        <h2>Draft Log</h2>
+        <button id="btnUndo" class="btn btn-sm btn-ghost">↩ Undo</button>
+      </div>
+      <div id="draftLog" class="draft-log"></div>
+    </section>
+
+    <!-- RIGHT: my team / par sheet / league teams -->
+    <section id="rightPanel" class="panel">
+      <div class="tabs" id="rightTabs">
+        <button data-tab="myteam" class="active">My Team</button>
+        <button data-tab="parsheet">Par Sheet</button>
+        <button data-tab="teams">League</button>
+      </div>
+      <div id="tab-myteam" class="tab-body"></div>
+      <div id="tab-parsheet" class="tab-body hidden"></div>
+      <div id="tab-teams" class="tab-body hidden"></div>
+    </section>
+  </main>
+
+  <!-- Draft-a-player modal -->
+  <div id="modalDraft" class="modal hidden">
+    <div class="modal-card">
+      <h3 id="draftPlayerName">Player</h3>
+      <p id="draftPlayerMeta" class="muted"></p>
+      <div class="form-row">
+        <label>Winning team</label>
+        <select id="draftTeamSelect"></select>
+      </div>
+      <div class="form-row">
+        <label>Price ($)</label>
+        <input id="draftPrice" type="number" min="1" value="1" />
+        <span id="draftMaxHint" class="muted"></span>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" data-close>Cancel</button>
+        <button id="btnEditPlayer" class="btn btn-ghost">Edit Value/Tier</button>
+        <button id="btnConfirmDraft" class="btn btn-primary">Sold!</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Edit player modal -->
+  <div id="modalEdit" class="modal hidden">
+    <div class="modal-card">
+      <h3>Edit Player</h3>
+      <div class="form-row"><label>My value ($)</label><input id="editValue" type="number" min="0" /></div>
+      <div class="form-row"><label>Tier</label><input id="editTier" type="number" min="1" max="12" /></div>
+      <div class="form-row"><label class="chk"><input type="checkbox" id="editTarget" /> ⭐ Target this player</label></div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" data-close>Cancel</button>
+        <button id="btnSaveEdit" class="btn btn-primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Connect modal -->
+  <div id="modalConnect" class="modal hidden">
+    <div class="modal-card wide">
+      <h3>Connect a Live Draft</h3>
+      <div class="tabs" id="connTabs">
+        <button data-ctab="sleeper" class="active">Sleeper</button>
+        <button data-ctab="espn">ESPN</button>
+        <button data-ctab="manual">Manual</button>
+      </div>
+
+      <div id="ctab-sleeper" class="ctab-body">
+        <p class="muted">Paste a Sleeper <b>draft ID</b> (the number in the draft URL:
+          sleeper.com/draft/nfl/<b>&lt;draft&nbsp;id&gt;</b>), or look it up by username.</p>
+        <div class="form-row"><label>Draft ID</label><input id="slDraftId" placeholder="e.g. 1128390527481303040" /></div>
+        <div class="or-rule">— or find it —</div>
+        <div class="form-row"><label>Username</label><input id="slUsername" placeholder="sleeper username" /></div>
+        <div class="form-row"><label>Season</label><input id="slSeason" value="2026" size="6" /></div>
+        <button id="btnSlFind" class="btn btn-sm">Find my drafts</button>
+        <div id="slDraftList" class="found-list"></div>
+        <div class="modal-actions">
+          <button class="btn btn-ghost" data-close>Close</button>
+          <button id="btnSlConnect" class="btn btn-primary">Connect</button>
+        </div>
+      </div>
+
+      <div id="ctab-espn" class="ctab-body hidden">
+        <p class="muted">Live-syncs auction results by polling ESPN's league API. Private leagues
+          need your <b>espn_s2</b> and <b>SWID</b> cookies (find them in your browser's dev tools
+          while logged in to fantasy.espn.com — see README).</p>
+        <div class="form-row"><label>League ID</label><input id="esLeagueId" placeholder="e.g. 12345678" /></div>
+        <div class="form-row"><label>Season</label><input id="esSeason" value="2026" size="6" /></div>
+        <div class="form-row"><label>espn_s2 <span class="muted">(private only)</span></label><input id="esS2" placeholder="optional" /></div>
+        <div class="form-row"><label>SWID <span class="muted">(private only)</span></label><input id="esSwid" placeholder="optional, e.g. {ABC…}" /></div>
+        <div class="modal-actions">
+          <button class="btn btn-ghost" data-close>Close</button>
+          <button id="btnEsConnect" class="btn btn-primary">Connect</button>
+        </div>
+      </div>
+
+      <div id="ctab-manual" class="ctab-body hidden">
+        <p class="muted">Track any draft by hand — click a player on the board, enter the winning
+          team and price. Works for in-person auctions with a live auctioneer.</p>
+        <div class="modal-actions">
+          <button class="btn btn-ghost" data-close>Close</button>
+          <button id="btnManual" class="btn btn-primary">Use Manual Mode</button>
+        </div>
+      </div>
+      <div id="connError" class="error hidden"></div>
+    </div>
+  </div>
+
+  <!-- Settings modal -->
+  <div id="modalSettings" class="modal hidden">
+    <div class="modal-card">
+      <h3>League Settings</h3>
+      <div class="form-row"><label>Teams</label><input id="setTeams" type="number" min="4" max="20" /></div>
+      <div class="form-row"><label>Budget ($)</label><input id="setBudget" type="number" min="50" max="1000" /></div>
+      <div class="form-row"><label>Roster size</label><input id="setRoster" type="number" min="8" max="25" /></div>
+      <div class="form-row"><label>My team</label><select id="setMyTeam"></select></div>
+      <div class="form-row"><label>Team names</label><textarea id="setTeamNames" rows="6" placeholder="One per line"></textarea></div>
+      <div class="modal-actions">
+        <button id="btnResetDraft" class="btn btn-danger">Reset Draft</button>
+        <button class="btn btn-ghost" data-close>Cancel</button>
+        <button id="btnSaveSettings" class="btn btn-primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/data.js"></script>
+  <script src="js/sleeper.js"></script>
+  <script src="js/espn.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

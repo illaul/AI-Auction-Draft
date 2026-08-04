@@ -1,0 +1,150 @@
+/**
+ * AI Auction Draft — server
+ *
+ * Serves the static front-end and proxies the Sleeper / ESPN fantasy APIs
+ * (ESPN's API does not allow cross-origin browser requests, and proxying
+ * Sleeper too keeps every network call same-origin).
+ */
+const express = require('express');
+const path = require('path');
+
+// Respect HTTPS_PROXY/HTTP_PROXY for outbound fetches when running behind a
+// corporate/egress proxy (Node's fetch ignores these env vars by default).
+try {
+  if (process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY) {
+    const { setGlobalDispatcher, EnvHttpProxyAgent } = require('undici');
+    setGlobalDispatcher(new EnvHttpProxyAgent());
+  }
+} catch (_) { /* undici not available — direct connections only */ }
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.use(express.static(path.join(__dirname, 'public')));
+
+// ---------------------------------------------------------------------------
+// Sleeper proxy — read-only, no auth required.
+// GET /api/sleeper/<anything>  ->  https://api.sleeper.app/v1/<anything>
+// ---------------------------------------------------------------------------
+const SLEEPER_BASE = 'https://api.sleeper.app/v1';
+const SLEEPER_ALLOWED = /^(user|users|league|draft|drafts|players)\//;
+
+let sleeperPlayersCache = null; // the /players/nfl payload is ~5MB; cache it
+let sleeperPlayersCacheTime = 0;
+
+app.get('/api/sleeper/*', async (req, res) => {
+  const sub = req.params[0];
+  if (!SLEEPER_ALLOWED.test(sub + '/')) {
+    return res.status(400).json({ error: 'Unsupported Sleeper path' });
+  }
+  try {
+    if (sub === 'players/nfl') {
+      const DAY = 24 * 60 * 60 * 1000;
+      if (!sleeperPlayersCache || Date.now() - sleeperPlayersCacheTime > DAY) {
+        const r = await fetch(`${SLEEPER_BASE}/players/nfl`);
+        if (!r.ok) throw new Error(`Sleeper ${r.status}`);
+        sleeperPlayersCache = await r.json();
+        sleeperPlayersCacheTime = Date.now();
+      }
+      // Slim the payload down to what the client needs.
+      const slim = {};
+      for (const [id, p] of Object.entries(sleeperPlayersCache)) {
+        if (!p || !p.position) continue;
+        slim[id] = {
+          n: p.full_name || `${p.first_name || ''} ${p.last_name || ''}`.trim(),
+          p: p.position,
+          t: p.team || 'FA',
+        };
+      }
+      return res.json(slim);
+    }
+    const r = await fetch(`${SLEEPER_BASE}/${sub}`);
+    if (!r.ok) return res.status(r.status).json({ error: `Sleeper responded ${r.status}` });
+    res.json(await r.json());
+  } catch (err) {
+    res.status(502).json({ error: String(err.message || err) });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// ESPN proxy.
+// GET /api/espn/league?year=&leagueId=&views=mDraftDetail,mTeams&s2=&swid=
+// GET /api/espn/players?year=&s2=&swid=
+// Private leagues require the user's espn_s2 + SWID cookies (see README).
+// ---------------------------------------------------------------------------
+const ESPN_BASE = 'https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl';
+
+function espnHeaders(query) {
+  const h = {
+    Accept: 'application/json',
+    'User-Agent':
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+  };
+  const { s2, swid } = query;
+  if (s2 && swid) {
+    const swidFmt = swid.startsWith('{') ? swid : `{${swid}}`;
+    h.Cookie = `espn_s2=${s2}; SWID=${swidFmt}`;
+  }
+  return h;
+}
+
+app.get('/api/espn/league', async (req, res) => {
+  const { year, leagueId } = req.query;
+  if (!/^\d{4}$/.test(year || '') || !/^\d+$/.test(leagueId || '')) {
+    return res.status(400).json({ error: 'year and leagueId are required' });
+  }
+  const views = (req.query.views || 'mDraftDetail,mTeams,mSettings')
+    .split(',')
+    .filter((v) => /^[a-zA-Z_]+$/.test(v))
+    .map((v) => `view=${v}`)
+    .join('&');
+  try {
+    const url = `${ESPN_BASE}/seasons/${year}/segments/0/leagues/${leagueId}?${views}`;
+    const r = await fetch(url, { headers: espnHeaders(req.query) });
+    if (!r.ok) {
+      return res.status(r.status).json({
+        error:
+          r.status === 401 || r.status === 403
+            ? 'ESPN denied access — for private leagues supply espn_s2 and SWID cookies'
+            : `ESPN responded ${r.status}`,
+      });
+    }
+    res.json(await r.json());
+  } catch (err) {
+    res.status(502).json({ error: String(err.message || err) });
+  }
+});
+
+const espnPlayersCache = new Map(); // year -> { time, data }
+
+app.get('/api/espn/players', async (req, res) => {
+  const { year } = req.query;
+  if (!/^\d{4}$/.test(year || '')) return res.status(400).json({ error: 'year is required' });
+  const DAY = 24 * 60 * 60 * 1000;
+  const cached = espnPlayersCache.get(year);
+  if (cached && Date.now() - cached.time < DAY) return res.json(cached.data);
+  try {
+    const url = `${ESPN_BASE}/seasons/${year}/players?scoringPeriodId=0&view=players_wl`;
+    const r = await fetch(url, {
+      headers: {
+        ...espnHeaders(req.query),
+        'X-Fantasy-Filter': JSON.stringify({ filterActive: { value: true } }),
+      },
+    });
+    if (!r.ok) return res.status(r.status).json({ error: `ESPN responded ${r.status}` });
+    const raw = await r.json();
+    // Slim: id -> { name, positionId, proTeamId }
+    const slim = {};
+    for (const p of raw) {
+      slim[p.id] = { n: p.fullName, pid: p.defaultPositionId };
+    }
+    espnPlayersCache.set(year, { time: Date.now(), data: slim });
+    res.json(slim);
+  } catch (err) {
+    res.status(502).json({ error: String(err.message || err) });
+  }
+});
+
+app.listen(PORT, () => {
+  console.log(`AI Auction Draft running at http://localhost:${PORT}`);
+});
