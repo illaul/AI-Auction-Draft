@@ -172,13 +172,6 @@ function netError(err) {
   return msg;
 }
 
-const median = (arr) => {
-  if (!arr.length) return 0;
-  const s = arr.slice().sort((a, b) => a - b);
-  const m = Math.floor(s.length / 2);
-  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
-};
-
 app.get('/api/odds/status', async (req, res) => {
   const key = req.query.key;
   if (!key) return res.status(400).json({ error: 'An Odds API key is required' });
@@ -219,11 +212,17 @@ app.get('/api/odds/props', async (req, res) => {
     events.sort((a, b) => new Date(a.commence_time) - new Date(b.commence_time));
     const slate = events.slice(0, maxEvents);
 
-    // name -> market -> [lines from each book]
+    // Lines are kept PER BOOK, not pre-averaged: the Faraz strategy picks a
+    // specific set of books to trust, and disagreement between them is itself
+    // a confidence signal.
+    // name -> market -> { bookKey: line }
     const acc = {};
-    const bump = (name, field, value) => {
+    const bookTitles = {};
+    const bookCounts = {};
+    const bump = (name, field, book, value) => {
       const p = (acc[name] = acc[name] || {});
-      (p[field] = p[field] || []).push(value);
+      const m = (p[field] = p[field] || {});
+      m[book] = value;
     };
 
     let creditsRemaining = null;
@@ -238,45 +237,43 @@ app.get('/api/odds/props', async (req, res) => {
       fetched += 1;
       const data = await r.json();
       for (const bk of data.bookmakers || []) {
+        bookTitles[bk.key] = bk.title || bk.key;
         for (const mk of bk.markets || []) {
           for (const oc of mk.outcomes || []) {
             const who = oc.description;
             if (!who) continue;
             if (mk.key === 'player_anytime_td') {
               if (String(oc.name).toLowerCase() !== 'yes') continue;
-              bump(who, '_tdPrice', Number(oc.price));
+              // Anytime-TD price -> implied probability, de-vigged roughly.
+              const a = Number(oc.price);
+              const prob = (a > 0 ? 100 / (a + 100) : -a / (-a + 100)) * 0.93;
+              bump(who, 'td', bk.key, prob);
+              bookCounts[bk.key] = (bookCounts[bk.key] || 0) + 1;
             } else if (MARKET_FIELD[mk.key]) {
               if (String(oc.name).toLowerCase() !== 'over') continue;
-              bump(who, MARKET_FIELD[mk.key], Number(oc.point));
+              bump(who, MARKET_FIELD[mk.key], bk.key, Number(oc.point));
+              bookCounts[bk.key] = (bookCounts[bk.key] || 0) + 1;
             }
           }
         }
       }
     }
 
-    // Consensus = median across books, per player, per market.
     const players = {};
     for (const [name, markets] of Object.entries(acc)) {
-      const out = { name };
-      for (const [field, vals] of Object.entries(markets)) {
-        if (field === '_tdPrice') continue;
-        out[field] = median(vals);
-      }
-      if (markets._tdPrice) {
-        // Anytime-TD price -> implied probability -> per-game TD expectation.
-        const probs = markets._tdPrice.map((a) => (a > 0 ? 100 / (a + 100) : -a / (-a + 100)));
-        const p = median(probs) * 0.93; // rough single-sided vig haircut
-        // Attribute the TD to rushing for backs, receiving for pass catchers.
-        if ((out.ry || 0) > (out.recy || 0)) out.rtd = p; else out.rectd = p;
-      }
-      players[name] = out;
+      players[name] = { name, markets };
     }
+    const books = Object.keys(bookCounts)
+      .map((k) => ({ key: k, title: bookTitles[k] || k, lines: bookCounts[k] }))
+      .sort((a, b) => b.lines - a.lines);
 
     res.json({
       players,
+      books,
       meta: {
         events: fetched,
         requested: slate.length,
+        books: books.length,
         commenceTime: slate[0]?.commence_time || null,
         creditsRemaining,
       },

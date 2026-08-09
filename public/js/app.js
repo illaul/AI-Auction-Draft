@@ -55,6 +55,12 @@
       compare: 'pos',       // 'pos' = edges within a position | 'global' = across all
       blend: 0,             // % weight of Vegas dollars blended into your values
       lines: null,          // null => use the bundled sample
+      raw: null,            // per-book payload, so book selection can change offline
+      books: [],            // available books from the last fetch
+      pickedBooks: [],      // the top-3 (or N) you trust — Strategy by Faraz
+      expectedGames: 16.2,
+      aranks: null,         // imported analyst rankings: normName -> rank
+      arankSource: 'sheet', // 'sheet' = derived from your values | 'import'
       winTotals: null,
       meta: null,
       stamp: 0,
@@ -67,7 +73,8 @@
       const raw = localStorage.getItem(STORE_KEY);
       if (raw) {
         state = JSON.parse(raw);
-        if (!state.vegas) state.vegas = freshVegas(); // saved before Vegas existed
+        // Backfill fields added after this save was written.
+        state.vegas = Object.assign(freshVegas(), state.vegas || {});
         return;
       }
     } catch (_) { /* fall through */ }
@@ -125,6 +132,84 @@
   }
 
   const vegasFor = (p) => (vegasActive() ? vegasMap().get(p.id) || null : null);
+
+  /**
+   * Strategy by Faraz — Vegas-vs-analyst rank divergence.
+   *
+   * Where the books rank a player (by the season production their over/unders
+   * imply) versus where the fantasy analysts rank him. The buys are the players
+   * Vegas is high on that the analyst consensus has buried; the fades are the
+   * analyst darlings the books won't back.
+   */
+  let farazCache = null;
+
+  function farazMap() {
+    const v = state.vegas;
+    const key = [v.source, v.scoring, v.stamp, v.arankSource,
+      state.players.length, state.settings.teams].join('|');
+    if (farazCache && farazCache.key === key) return farazCache.map;
+
+    const lines = activeLines();
+    const rows = [];
+    for (const p of state.players) {
+      if (p.pos === 'K' || p.pos === 'DST' || !p.pos) continue;
+      const line = lines[VegasEngine.normName(p.n)];
+      if (!line) continue;
+      rows.push({
+        id: p.id, pos: p.pos,
+        proj: VegasEngine.projectPoints(line, v.scoring),
+        analyst: analystRank(p),
+        spread: line.spread || 0,
+        books: line.books || 0,
+      });
+    }
+    const div = VegasEngine.rankDivergence(rows);
+    const map = new Map();
+    for (const r of rows) {
+      const d = div.get(r.id);
+      if (d) map.set(r.id, { ...d, proj: r.proj, spread: r.spread, books: r.books });
+    }
+    farazCache = { key, map };
+    return map;
+  }
+
+  /**
+   * Analyst ranking for a player — lower is better. Uses imported expert ranks
+   * when you've pasted them, otherwise falls back to the order implied by the
+   * cheat-sheet values already on your board.
+   */
+  function analystRank(p) {
+    const ar = state.vegas.aranks;
+    if (ar) {
+      const r = ar[VegasEngine.normName(p.n)];
+      if (r !== undefined) return r;
+      return 9999; // unranked by the analysts you pasted
+    }
+    return -p.v; // higher sheet value => better rank
+  }
+
+  const farazFor = (p) => (vegasActive() ? farazMap().get(p.id) || null : null);
+
+  /**
+   * Buy / fade / neutral verdict from the rank gap.
+   *
+   * Thresholds are relative to the size of the position's ranked pool: moving
+   * three spots means everything in a 6-player list and nothing in a 60-player
+   * one. `rel` is the fraction of the position list the player moves.
+   */
+  function farazVerdict(d) {
+    if (!d) return null;
+    const pool = Math.max(2, d.pool || 2);
+    const rel = d.gap / pool;
+    const mag = Math.abs(rel);
+    const strong = mag >= 0.20 || Math.abs(d.gap) >= 8;
+    const lean = mag >= 0.08 && Math.abs(d.gap) >= 2;
+    if (!strong && !lean) return { kind: 'flat', strength: '', label: '—', rel };
+    const strength = strong ? 'strong' : 'lean';
+    return d.gap > 0
+      ? { kind: 'buy', strength, label: strong ? 'BUY' : 'buy', rel }
+      : { kind: 'fade', strength, label: strong ? 'FADE' : 'fade', rel };
+  }
 
   /**
    * The dollar figure the app prices against. Equals your own value unless you
@@ -303,15 +388,16 @@
     // 1-QB guarantee reminder while I still need a QB
     if (myNeeds.includes('QB') && progress > 0.2 && mySpots > 3) tips.push({ t: STRATEGY_TIPS.qbGuarantee });
 
-    // biggest Vegas disagreement at a position I still need
+    // biggest Vegas-vs-analyst divergence at a position I still need
     if (vegasActive() && mySpots > 2) {
-      const bull = undrafted()
-        .map((p) => ({ p, vg: vegasFor(p) }))
-        .filter((x) => x.vg && x.vg.edge >= 6
+      const buy = undrafted()
+        .map((p) => ({ p, fz: farazFor(p), vg: vegasFor(p) }))
+        .map((x) => ({ ...x, vd: farazVerdict(x.fz) }))
+        .filter((x) => x.fz && x.vd.kind === 'buy' && x.vd.strength === 'strong'
           && (myNeeds.includes(x.p.pos) || (FLEX_POS.includes(x.p.pos) && myNeeds.includes('FLX'))))
-        .sort((a, b) => b.vg.edge - a.vg.edge)[0];
-      if (bull) {
-        tips.push({ t: `📈 Vegas edge: the books' props imply ${bull.p.n} is worth $${bull.vg.val} — $${bull.vg.edge} above your sheet. Bid up to the Vegas number, not yours.` });
+        .sort((a, b) => b.vd.rel - a.vd.rel)[0];
+      if (buy) {
+        tips.push({ t: `📐 Strategy by Faraz: the books have ${buy.p.n} as ${buy.p.pos}#${buy.fz.vegasRank} while the analysts have him ${buy.p.pos}#${buy.fz.analystRank}. The room prices the analyst rank — buy the gap${buy.vg ? `, up to about $${buy.vg.val}` : ''}.` });
       }
     }
 
@@ -361,10 +447,16 @@
         const drafted = p.draftedBy !== null;
         const adj = adjValue(p, infl);
         const vg = vegasFor(p);
-        const veg = !vg || drafted ? ''
-          : vg.edge >= 3 ? `<span class="veg up" title="Vegas values him at $${vg.val} (${Math.round(vg.proj)} pts)">▲$${vg.edge}</span>`
-          : vg.edge <= -3 ? `<span class="veg down" title="Vegas values him at $${vg.val} (${Math.round(vg.proj)} pts)">▼$${Math.abs(vg.edge)}</span>`
-          : `<span class="veg flat" title="Vegas values him at $${vg.val} (${Math.round(vg.proj)} pts)">≈</span>`;
+        const fz = farazFor(p);
+        const verdict = farazVerdict(fz);
+        const tip = fz
+          ? `Strategy by Faraz — analysts ${p.pos}#${fz.analystRank}, Vegas ${p.pos}#${fz.vegasRank}`
+            + `${vg ? ` · Vegas value $${vg.val}` : ''}`
+          : '';
+        const veg = !fz || drafted ? ''
+          : verdict.kind === 'buy' ? `<span class="veg up${verdict.strength === 'strong' ? ' strong' : ''}" title="${tip}">▲${fz.gap}</span>`
+          : verdict.kind === 'fade' ? `<span class="veg down${verdict.strength === 'strong' ? ' strong' : ''}" title="${tip}">▼${Math.abs(fz.gap)}</span>`
+          : `<span class="veg flat" title="${tip}">≈</span>`;
         return `<div class="p-row${drafted ? ' drafted' : ''}" data-pid="${p.id}">
           <span class="pos-chip pos-${p.pos}">${p.pos === 'DST' ? 'D' : p.pos}</span>
           <span class="p-name">${p.target ? '<span class="star">⭐</span> ' : ''}${p.n}<span class="tm">${p.tm}</span></span>
@@ -414,24 +506,26 @@
       groups.push(`<div class="nom-group"><h4>🎯 Attack a tier with depth (you need these)</h4>${protect.slice(0, 4).map((x) => item(x.p, x.why)).join('')}</div>`);
     }
 
-    // 2b. Vegas edge: books imply more usage than your sheet says he's worth
+    // 2b. Strategy by Faraz — rank divergence between the books and the analysts
     if (vegasActive()) {
       const needsPos = (pos) => myNeeds.includes(pos) || (FLEX_POS.includes(pos) && myNeeds.includes('FLX'));
-      const bulls = undrafted()
-        .map((p) => ({ p, vg: vegasFor(p) }))
-        .filter((x) => x.vg && x.vg.edge >= 4 && needsPos(x.p.pos))
-        .sort((a, b) => b.vg.edge - a.vg.edge)
+      const buys = undrafted()
+        .map((p) => ({ p, fz: farazFor(p) }))
+        .map((x) => ({ ...x, vd: farazVerdict(x.fz) }))
+        .filter((x) => x.fz && x.vd.kind === 'buy' && needsPos(x.p.pos))
+        .sort((a, b) => b.vd.rel - a.vd.rel)
         .slice(0, 4);
-      if (bulls.length && mySpots > 2) {
-        groups.push(`<div class="nom-group vegas"><h4>📈 Vegas is high on these (you need them)</h4>${bulls.map((x) => item(x.p, `books say $${x.vg.val} · +$${x.vg.edge}`)).join('')}</div>`);
+      if (buys.length && mySpots > 2) {
+        groups.push(`<div class="nom-group vegas"><h4>📐 Faraz buys — Vegas high, analysts low</h4>${buys.map((x) => item(x.p, `A#${x.fz.analystRank} → V#${x.fz.vegasRank} (+${x.fz.gap})`)).join('')}</div>`);
       }
       const fades = undrafted()
-        .map((p) => ({ p, vg: vegasFor(p) }))
-        .filter((x) => x.vg && x.vg.edge <= -6 && !needsPos(x.p.pos) && x.p.v >= 12)
-        .sort((a, b) => a.vg.edge - b.vg.edge)
+        .map((p) => ({ p, fz: farazFor(p) }))
+        .map((x) => ({ ...x, vd: farazVerdict(x.fz) }))
+        .filter((x) => x.fz && x.vd.kind === 'fade' && !needsPos(x.p.pos) && x.p.v >= 12)
+        .sort((a, b) => a.vd.rel - b.vd.rel)
         .slice(0, 3);
       if (fades.length && mySpots > 2) {
-        groups.push(`<div class="nom-group drain"><h4>📉 Vegas fades — nominate, let someone else pay</h4>${fades.map((x) => item(x.p, `books say only $${x.vg.val}`)).join('')}</div>`);
+        groups.push(`<div class="nom-group drain"><h4>📐 Faraz fades — analyst darlings the books doubt</h4>${fades.map((x) => item(x.p, `A#${x.fz.analystRank} but only V#${x.fz.vegasRank}`)).join('')}</div>`);
       }
     }
 
@@ -632,10 +726,22 @@
       : `<div class="vg-banner ok"><b>✓ ${v.source === 'odds-api' ? 'Live Odds API lines' : 'Imported lines'}</b>
            <div class="muted">${lineCount} players · ${v.asOf}${v.meta?.events ? ` · ${v.meta.events} games sampled` : ''}</div></div>`;
 
+    // Book picker — the strategy rests on trusting a chosen few books.
+    const picked = v.pickedBooks || [];
+    const bookPicker = (v.books && v.books.length)
+      ? `<div class="vg-books">
+           <label>Books used <span class="muted">(${picked.length} selected)</span></label>
+           <div class="book-chips">${v.books.slice(0, 10).map((b) =>
+             `<button class="book-chip${picked.includes(b.key) ? ' on' : ''}" data-book="${b.key}">${b.title}</button>`).join('')}</div>
+         </div>`
+      : '';
+
     const controls = `
       <div class="vg-controls">
         <button id="btnVgOpen" class="btn btn-sm">Fetch / import lines</button>
+        <button id="btnVgRanks" class="btn btn-sm btn-ghost">Analyst ranks</button>
       </div>
+      ${bookPicker}
       <div class="vg-row">
         <label>Scoring</label>
         <select id="vgScoring">
@@ -664,19 +770,23 @@
     } else {
       const rated = state.players
         .filter((p) => p.draftedBy === null)
-        .map((p) => ({ p, vg: vegasFor(p) }))
-        .filter((x) => x.vg);
-      const bulls = rated.slice().sort((a, b) => b.vg.edge - a.vg.edge).filter((x) => x.vg.edge > 0).slice(0, 10);
-      const fades = rated.slice().sort((a, b) => a.vg.edge - b.vg.edge).filter((x) => x.vg.edge < 0).slice(0, 8);
+        .map((p) => ({ p, vg: vegasFor(p), fz: farazFor(p) }))
+        .filter((x) => x.fz);
+      const scored = rated.map((x) => ({ ...x, vd: farazVerdict(x.fz) }));
+      const buys = scored.filter((x) => x.vd.kind === 'buy').sort((a, b) => b.vd.rel - a.vd.rel).slice(0, 10);
+      const fades = scored.filter((x) => x.vd.kind === 'fade').sort((a, b) => a.vd.rel - b.vd.rel).slice(0, 8);
 
-      const row = (x) => `<div class="vg-item" data-pid="${x.p.id}">
+      const row = (x) => {
+        const shaky = x.fz.spread > 0.12 || (x.fz.books && x.fz.books < 2);
+        return `<div class="vg-item" data-pid="${x.p.id}">
           <span class="pos-chip pos-${x.p.pos}">${x.p.pos}</span>
-          <span class="fill">${x.p.n}</span>
-          <span class="muted">${Math.round(x.vg.proj)} pts</span>
-          <span class="mine">$${x.p.v}</span>
-          <span class="theirs">$${x.vg.val}</span>
-          <span class="edge ${x.vg.edge > 0 ? 'up' : 'down'}">${x.vg.edge > 0 ? '+' : ''}${x.vg.edge}</span>
+          <span class="fill">${x.p.n}${shaky ? ' <span class="shaky" title="Books disagree on this line — lower confidence">≠</span>' : ''}</span>
+          <span class="arank">A#${x.fz.analystRank}</span>
+          <span class="vrank">V#${x.fz.vegasRank}</span>
+          <span class="edge ${x.fz.gap > 0 ? 'up' : 'down'}">${x.fz.gap > 0 ? '+' : ''}${x.fz.gap}</span>
+          <span class="mine">${x.vg ? `$${x.p.v}→$${x.vg.val}` : ''}</span>
         </div>`;
+      };
 
       // Coverage matters: thin position groups make replacement level optimistic.
       const cov = {};
@@ -694,22 +804,34 @@
       const winChips = Object.entries(wins).sort((a, b) => b[1] - a[1]).slice(0, 12)
         .map(([t, w]) => `<span class="need-chip">${t} ${w}</span>`).join('');
 
+      const arSrc = v.arankSource === 'import'
+        ? `${Object.keys(v.aranks || {}).length} imported analyst ranks`
+        : 'analyst ranks derived from your board values';
+
       body = `
-        <div class="vg-head"><span></span><span>Player</span><span>Proj</span><span>Mine</span><span>Vegas</span><span>Edge</span></div>
-        <h4 class="vg-sec up">📈 Books are higher than you — buy</h4>
-        ${bulls.map(row).join('') || '<div class="muted">No positive edges left.</div>'}
-        <h4 class="vg-sec down">📉 Books are lower — fade or let the room pay</h4>
-        ${fades.map(row).join('') || '<div class="muted">No negative edges left.</div>'}
+        <div class="faraz-head">
+          <b>📐 Strategy by Faraz</b>
+          <div class="muted">Buy where the books rank a player well above the analysts — the room
+          prices the analyst rank, so you get the books' production at a discount. Fade the reverse.
+          Ranks are within position; <b>A#</b> = analyst, <b>V#</b> = Vegas.</div>
+          <div class="muted" style="margin-top:4px">Using ${arSrc}.</div>
+        </div>
+        <div class="vg-head"><span></span><span>Player</span><span>A#</span><span>V#</span><span>Gap</span><span>$</span></div>
+        <h4 class="vg-sec up">🟢 Vegas high / analysts low — BUY</h4>
+        ${buys.map(row).join('') || '<div class="muted">No buy-side divergence right now.</div>'}
+        <h4 class="vg-sec down">🔴 Analyst darlings the books don\'t back — FADE</h4>
+        ${fades.map(row).join('') || '<div class="muted">No fade-side divergence right now.</div>'}
         <h4 class="vg-sec">🏆 Team win totals</h4>
         <div class="needs">${winChips || '<span class="muted">None loaded.</span>'}</div>
         <h4 class="vg-sec">📋 Line coverage</h4>
         <div class="needs">${covChips}</div>
-        <p class="muted">Vegas dollars redistribute the money you already assign to covered players,
-        so edges stay meaningful at any coverage level.
+        <p class="muted">Rank gaps only compare players who have lines, so a thin position means a
+        short ranking list and noisier gaps.${thin ? ' Groups under 8 players are especially rough here.' : ''}
+        The <b>$</b> column shows your value → the Vegas-implied value.
         ${(state.vegas.compare || 'pos') === 'pos'
-          ? 'Edges compare a player to others at <b>his own position</b> — deciding RB vs. WR is your tiers\' job, not the books\'.'
-          : '<b>Across-positions mode</b> only holds up when every position has deep coverage; thin groups will bias a whole position one way.'}
-        ${thin ? ' Groups under 8 players make replacement level optimistic — treat those edges as rough.' : ''}</p>`;
+          ? 'Dollar values compare within <b>position</b>.'
+          : '<b>Across-positions</b> dollar mode needs deep coverage everywhere to hold up.'}
+        <span class="shaky">≠</span> marks players your selected books disagree on.</p>`;
     }
 
     el.innerHTML = banner + controls + body;
@@ -718,6 +840,21 @@
     bind('#btnVgAllow', 'click', () => { state.vegas.allowSample = true; save(); renderAll(); });
     bind('#btnVgDisallow', 'click', () => { state.vegas.allowSample = false; save(); renderAll(); });
     bind('#btnVgOpen', 'click', () => { $('#vegasMsg').classList.add('hidden'); show('#modalVegas'); });
+    bind('#btnVgRanks', 'click', () => {
+      $('#vegasMsg').classList.add('hidden');
+      $$('#vegTabs button').forEach((x) => x.classList.remove('active'));
+      $('#vegTabs button[data-vtab="ranks"]').classList.add('active');
+      $$('#modalVegas .ctab-body').forEach((x) => x.classList.add('hidden'));
+      show('#vtab-ranks');
+      show('#modalVegas');
+    });
+    $$('#tab-vegas .book-chip').forEach((n) => n.addEventListener('click', () => {
+      const k = n.dataset.book;
+      const picked = new Set(state.vegas.pickedBooks || []);
+      if (picked.has(k)) picked.delete(k); else picked.add(k);
+      state.vegas.pickedBooks = Array.from(picked);
+      rebuildLinesFromBooks();
+    }));
     bind('#vgScoring', 'change', (e) => { state.vegas.scoring = e.target.value; save(); renderAll(); });
     bind('#vgCompare', 'change', (e) => { state.vegas.compare = e.target.value; save(); renderAll(); });
     bind('#vgBlend', 'change', (e) => { state.vegas.blend = Number(e.target.value); save(); renderAll(); });
@@ -758,19 +895,23 @@
       const r = await fetch(`/api/odds/props?key=${encodeURIComponent(key)}&maxEvents=${maxEvents}`);
       const b = await r.json();
       if (!r.ok) return vegasMsg(b.error, true);
-      const perGame = {};
-      for (const [name, p] of Object.entries(b.players || {})) {
-        perGame[VegasEngine.normName(name)] = { ...p, name };
-      }
-      const count = Object.keys(perGame).length;
+      const count = Object.keys(b.players || {}).length;
       if (!count) {
         return vegasMsg('The Odds API returned no player props — books may not have posted them yet for the next slate.', true);
       }
-      state.vegas.lines = VegasEngine.extrapolateWeekProps(perGame, expectedGames);
-      state.vegas.source = 'odds-api';
-      state.vegas.asOf = `fetched ${new Date().toLocaleString()}`;
-      state.vegas.meta = b.meta;
-      state.vegas.stamp = Date.now();
+      const v = state.vegas;
+      v.raw = b.players;
+      v.books = b.books || [];
+      v.expectedGames = expectedGames;
+      // Keep the user's book picks if those books are still available.
+      const avail = v.books.map((x) => x.key);
+      const keep = (v.pickedBooks || []).filter((k) => avail.includes(k));
+      v.pickedBooks = keep.length ? keep : VegasEngine.defaultBooks(v.books, 3);
+      v.lines = VegasEngine.consensusLines(v.raw, v.pickedBooks, expectedGames);
+      v.source = 'odds-api';
+      v.asOf = `fetched ${new Date().toLocaleString()}`;
+      v.meta = b.meta;
+      v.stamp = Date.now();
       save();
       hide('#modalVegas');
       renderAll();
@@ -779,6 +920,44 @@
     } finally {
       btn.textContent = 'Fetch lines';
     }
+  }
+
+  /** Recomputes season lines from the stored per-book payload. */
+  function rebuildLinesFromBooks() {
+    const v = state.vegas;
+    if (!v.raw) return;
+    if (!v.pickedBooks || !v.pickedBooks.length) {
+      v.pickedBooks = VegasEngine.defaultBooks(v.books, 3);
+    }
+    v.lines = VegasEngine.consensusLines(v.raw, v.pickedBooks, v.expectedGames);
+    v.stamp = Date.now();
+    save();
+    renderAll();
+  }
+
+  function vegasImportRanks() {
+    const text = $('#vgRanks').value.trim();
+    if (!text) return vegasMsg('Paste an analyst ranking first.', true);
+    const ranks = VegasEngine.parseRanks(text);
+    const count = Object.keys(ranks).length;
+    if (!count) return vegasMsg('Could not read any player names out of that.', true);
+    state.vegas.aranks = ranks;
+    state.vegas.arankSource = 'import';
+    state.vegas.stamp = Date.now();
+    save();
+    const matched = state.players.filter((p) => ranks[VegasEngine.normName(p.n)] !== undefined).length;
+    hide('#modalVegas');
+    renderAll();
+    alert(`Imported ${count} analyst ranks — ${matched} matched players on your board.`);
+  }
+
+  function vegasClearRanks() {
+    state.vegas.aranks = null;
+    state.vegas.arankSource = 'sheet';
+    state.vegas.stamp = Date.now();
+    save();
+    hide('#modalVegas');
+    renderAll();
   }
 
   function vegasImport() {
@@ -1108,6 +1287,8 @@
     $('#btnVgTest').addEventListener('click', vegasTestKey);
     $('#btnVgFetch').addEventListener('click', vegasFetch);
     $('#btnVgImport').addEventListener('click', vegasImport);
+    $('#btnVgImportRanks').addEventListener('click', vegasImportRanks);
+    $('#btnVgClearRanks').addEventListener('click', vegasClearRanks);
 
     $('#btnSlFind').addEventListener('click', findSleeperDrafts);
     $('#btnSlConnect').addEventListener('click', connectSleeper);

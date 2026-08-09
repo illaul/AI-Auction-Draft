@@ -185,6 +185,7 @@
       <div class="tabs" id="vegTabs">
         <button data-vtab="fetch" class="active">Fetch live</button>
         <button data-vtab="import">Import / paste</button>
+        <button data-vtab="ranks">Analyst ranks</button>
       </div>
 
       <div id="vtab-fetch" class="ctab-body">
@@ -222,6 +223,22 @@
         <div class="modal-actions">
           <button class="btn btn-ghost" data-close>Close</button>
           <button id="btnVgImport" class="btn btn-primary">Import lines</button>
+        </div>
+      </div>
+      <div id="vtab-ranks" class="ctab-body hidden">
+        <p class="muted"><b>Strategy by Faraz</b> compares the books' ranking to the
+          <b>analysts'</b> ranking. Paste an expert top-150 / ADP list here — one player per line
+          (line order is the rank), or <code>12. Bijan Robinson</code>, or
+          <code>Bijan Robinson, 12</code>. Without an import, the app uses the ranking implied by
+          your own board values.</p>
+        <div class="form-row">
+          <label>Analyst rankings</label>
+          <textarea id="vgRanks" rows="8" placeholder="Ja'Marr Chase&#10;Bijan Robinson&#10;Jahmyr Gibbs&#10;…"></textarea>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-ghost" data-close>Close</button>
+          <button id="btnVgClearRanks" class="btn btn-ghost">Use my board values</button>
+          <button id="btnVgImportRanks" class="btn btn-primary">Import ranks</button>
         </div>
       </div>
       <div id="vegasMsg" class="error hidden"></div>

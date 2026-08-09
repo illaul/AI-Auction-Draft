@@ -16,7 +16,47 @@ in-draft tooling.
 | **Two currencies** — dollars *and* roster spots | Max bid everywhere = money − (open spots − 1); the app blocks illegal bids and warns at the endgame |
 | **Room inflation** | Live inflation multiplier (remaining money ÷ remaining sheet value) and inflation-adjusted prices next to your sheet values |
 | **Coach bar** | Context-aware strategy tips (sitting-down bonus, mid-draft aggression, 1-QB value guarantee, max-bid rule, don't price-enforce…) that change as the draft progresses |
-| **Vegas edge** | Sportsbook props → fantasy points → auction dollars, compared against your sheet: ▲/▼ badges on the board, a Vegas tab ranking buys and fades, and Vegas-driven nomination suggestions |
+| **Vegas edge — Strategy by Faraz** | Rank divergence between the sportsbooks and the fantasy analysts: buy where Vegas ranks a player well above the analyst consensus, fade the reverse |
+
+## Strategy by Faraz — Vegas vs. analyst rank divergence
+
+The edge this app hunts for is **disagreement between the betting market and the fantasy
+industry**, credited to and named for Faraz:
+
+> Buy the players whose season over/unders at the top books imply a **high** finish but whom the
+> fantasy analysts rank **low** — the draft room prices the analyst rank, so you get the books'
+> projected production at a discount. Fade the mirror image: analyst darlings the books won't back,
+> who will cost a premium for production Vegas doesn't project.
+
+The Vegas tab is that board. For every player with lines it computes two rankings **within his own
+position**, over the same covered set of players:
+
+- **A#** — the analyst rank. Either an expert top-150 / ADP list you paste in, or (by default) the
+  ranking implied by the values on your own board.
+- **V#** — the Vegas rank, from the season fantasy points implied by his over/unders for yards,
+  TDs, receptions and the rest, under your scoring settings.
+
+**Gap = A# − V#.** Positive means Vegas is higher than the analysts → **BUY**. Negative means
+analyst darling the books doubt → **FADE**. Thresholds scale with the size of the position pool,
+since moving three spots means everything in a 6-player list and nothing in a 60-player one. A
+`≠` marks players your selected books disagree sharply on — lower confidence.
+
+The same signal drives ▲/▼ badges on the player board, a "Faraz buys" group in the nomination
+helper (players you still need), a "Faraz fades" group (nominate them, let the room overpay), and
+a coach-bar callout for the strongest divergence at a position you need.
+
+### Choosing your books
+
+The strategy rests on trusting a specific handful of books rather than the whole field, so lines
+are stored **per book** and the Vegas tab has a book picker — the top 3 by default (DraftKings,
+FanDuel, BetMGM when available), toggleable to any set. The consensus line is the median across
+just the books you've selected, and switching books recomputes instantly without re-fetching.
+
+### Analyst rankings
+
+The "Analyst ranks" tab in the Vegas dialog takes an expert top-150 or ADP list. It accepts a plain
+ordered list of names (line order = rank), `12. Bijan Robinson`, or `Bijan Robinson, 12`. Without
+an import it falls back to your own board's ranking, which is itself an analyst cheat sheet.
 
 ## Vegas lines
 
@@ -29,10 +69,10 @@ is explorable out of the box. The app will not show Vegas edges on the player bo
 either load real lines or explicitly click "Show sample edges anyway". Two ways to load real ones:
 
 - **Fetch live** — paste a free [the-odds-api.com](https://the-odds-api.com) key. The server pulls
-  consensus player props (pass/rush/receiving yards, receptions, anytime TD) across the next NFL
-  slate, takes the median line per player across books, de-vigs the anytime-TD price into a TD
-  expectation, and extrapolates to a season using your expected-games number. Each game sampled
-  costs API credits.
+  player props (pass/rush/receiving yards, receptions, anytime TD) across the next NFL slate,
+  keeping every book's line separately so you can pick which three to trust. It de-vigs the
+  anytime-TD price into a TD expectation and extrapolates to a season using your expected-games
+  number. Each game sampled costs API credits.
 - **Import / paste** — a CSV or TSV of season-long props with a header row. Recognized columns:
   `player, pos, team, games, pass_yds, pass_td, int, rush_yds, rush_td, rec, rec_yds, rec_td` —
   or just `player, fpts` if you already have projections. Optional team win totals paste in as

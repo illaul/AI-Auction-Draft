@@ -233,6 +233,144 @@ window.VegasEngine = (function () {
   }
 
   // ---------------------------------------------------------------------------
+  // Book selection (Strategy by Faraz: trust a chosen top-3, not the whole field)
+  // ---------------------------------------------------------------------------
+  /** Books preferred by default, in order, when the user hasn't picked. */
+  const BOOK_PRIORITY = [
+    'draftkings', 'fanduel', 'betmgm', 'caesars', 'williamhill_us',
+    'pointsbetus', 'betrivers', 'espnbet', 'fanatics', 'bovada',
+  ];
+
+  /** Picks the default top-N books: preferred order first, then by coverage. */
+  function defaultBooks(books, n) {
+    const avail = (books || []).map((b) => b.key);
+    const ranked = [
+      ...BOOK_PRIORITY.filter((k) => avail.includes(k)),
+      ...avail.filter((k) => !BOOK_PRIORITY.includes(k)),
+    ];
+    return ranked.slice(0, n || 3);
+  }
+
+  const STAT_FIELDS = ['py', 'ptd', 'ry', 'rec', 'recy', 'td'];
+
+  /**
+   * Collapses per-book lines into one season line per player, using only the
+   * selected books. Also reports how far apart those books are — wide
+   * disagreement means the market itself isn't confident.
+   */
+  function consensusLines(rawPlayers, selectedBooks, expectedGames) {
+    const g = expectedGames || 16.2;
+    const lines = {};
+    for (const [rawName, entry] of Object.entries(rawPlayers || {})) {
+      const markets = entry.markets || {};
+      const perGame = {};
+      let spreadPts = 0, spreadBase = 0, booksSeen = new Set();
+
+      for (const field of STAT_FIELDS) {
+        const byBook = markets[field];
+        if (!byBook) continue;
+        const vals = [];
+        for (const bk of selectedBooks) {
+          if (byBook[bk] !== undefined) { vals.push(byBook[bk]); booksSeen.add(bk); }
+        }
+        if (!vals.length) continue;
+        perGame[field] = median(vals);
+        if (vals.length > 1 && perGame[field]) {
+          spreadPts += Math.max(...vals) - Math.min(...vals);
+          spreadBase += Math.abs(perGame[field]);
+        }
+      }
+      if (!Object.keys(perGame).length) continue;
+
+      // TD probability is per game; everything else is a per-game yardage/count.
+      const td = perGame.td || 0;
+      const ry = (perGame.ry || 0) * g;
+      const recy = (perGame.recy || 0) * g;
+      lines[normName(rawName)] = {
+        name: rawName, g,
+        py: (perGame.py || 0) * g,
+        ptd: (perGame.ptd || 0) * g,
+        ry, recy,
+        rec: (perGame.rec || 0) * g,
+        // Attribute scores to the phase the player is actually used in.
+        rtd: ry > recy ? td * g : 0,
+        rectd: ry > recy ? 0 : td * g,
+        books: booksSeen.size,
+        spread: spreadBase > 0 ? spreadPts / spreadBase : 0,
+      };
+    }
+    return lines;
+  }
+
+  function median(arr) {
+    if (!arr.length) return 0;
+    const s = arr.slice().sort((a, b) => a - b);
+    const m = Math.floor(s.length / 2);
+    return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Rank divergence — the core of the Faraz strategy
+  // ---------------------------------------------------------------------------
+  /**
+   * Compares where the BOOKS rank a player against where the ANALYSTS rank him,
+   * within his own position.
+   *
+   *   gap = analystRank - vegasRank
+   *
+   *   gap > 0  Vegas ranks him higher than the analysts do. The books' money
+   *            says he'll produce, the draft room's consensus says he won't —
+   *            so he'll be cheap. BUY.
+   *   gap < 0  Analyst darling the books don't believe in. He'll be expensive
+   *            for production Vegas doesn't project. FADE.
+   *
+   * Both rankings are computed over the SAME covered subset, otherwise the two
+   * rank numbers would not be on the same scale.
+   *
+   * @param {Array<{id,pos,proj,analyst}>} rows  analyst = lower is better
+   */
+  function rankDivergence(rows) {
+    const byPos = {};
+    for (const r of rows) (byPos[r.pos] = byPos[r.pos] || []).push(r);
+    const out = new Map();
+    for (const list of Object.values(byPos)) {
+      const vegasOrder = list.slice().sort((a, b) => b.proj - a.proj);
+      const analystOrder = list.slice().sort((a, b) => a.analyst - b.analyst);
+      const vRank = new Map(vegasOrder.map((r, i) => [r.id, i + 1]));
+      const aRank = new Map(analystOrder.map((r, i) => [r.id, i + 1]));
+      for (const r of list) {
+        const v = vRank.get(r.id), a = aRank.get(r.id);
+        out.set(r.id, { vegasRank: v, analystRank: a, gap: a - v, pool: list.length });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Parses analyst rankings. Accepts "player,rank" / "rank,player" rows, or a
+   * plain ordered list of names where line order is the ranking.
+   */
+  function parseRanks(text) {
+    const rows = String(text).trim().split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const out = {};
+    let implicit = 0;
+    for (const line of rows) {
+      // "12. Bijan Robinson" / "12, Bijan Robinson" / "12 Bijan Robinson"
+      let m = line.match(/^(\d+)[.)\s,\t]+(.+)$/);
+      if (m) { out[normName(m[2])] = Number(m[1]); continue; }
+      // "Bijan Robinson, 12" / "Bijan Robinson\t12"
+      m = line.match(/^(.+?)[,\t]\s*(\d+(?:\.\d+)?)$/);
+      if (m) { out[normName(m[1])] = Number(m[2]); continue; }
+      // bare name -> use line order
+      const name = line.replace(/^[-*•]\s*/, '');
+      if (/[a-zA-Z]/.test(name)) out[normName(name)] = ++implicit;
+    }
+    // If we mixed implicit ordering with explicit numbers, renumber implicits
+    // after the explicit ones so they don't collide at the top of the board.
+    return out;
+  }
+
+  // ---------------------------------------------------------------------------
   // Week-1 props -> season lines
   // ---------------------------------------------------------------------------
   /**
@@ -349,13 +487,18 @@ window.VegasEngine = (function () {
     SCORING,
     SAMPLE_LINES,
     SAMPLE_WIN_TOTALS,
+    BOOK_PRIORITY,
     projectPoints,
     priceProjections,
     draftedCounts,
     normName,
     parseCsv,
     parseWinTotals,
+    parseRanks,
     extrapolateWeekProps,
     impliedProb,
+    defaultBooks,
+    consensusLines,
+    rankDivergence,
   };
 })();

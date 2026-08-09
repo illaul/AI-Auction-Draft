@@ -202,7 +202,7 @@ body {
 .vg-sec { font-size: 12px; margin: 12px 0 4px; color: var(--muted); }
 .vg-sec.up { color: var(--accent); } .vg-sec.down { color: var(--danger); }
 .vg-head, .vg-item {
-  display: grid; grid-template-columns: 30px 1fr 46px 36px 40px 38px; gap: 5px;
+  display: grid; grid-template-columns: 28px 1fr 38px 38px 34px 64px; gap: 4px;
   align-items: center; padding: 4px 5px; border-radius: 6px; font-size: 12px;
 }
 .vg-head { color: var(--muted); font-size: 10px; text-transform: uppercase; }
@@ -266,3 +266,22 @@ body {
   #rightPanel { grid-column: auto; }
 }
 .need-chip.thin { background: #4a3a1c; color: var(--warn); }
+
+/* ---------- Strategy by Faraz ---------- */
+.veg.strong { text-shadow: 0 0 8px currentColor; }
+.faraz-head {
+  background: var(--panel-2); border: 1px solid var(--border); border-left: 3px solid var(--accent);
+  border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; font-size: 12px;
+}
+.vg-books { margin-bottom: 8px; }
+.vg-books label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px; }
+.book-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.book-chip {
+  font-size: 11px; padding: 3px 8px; border-radius: 6px; cursor: pointer;
+  background: var(--panel-2); color: var(--muted); border: 1px solid var(--border);
+}
+.book-chip.on { background: var(--accent); color: #06130b; border-color: var(--accent); font-weight: 700; }
+.vg-item .arank, .vg-item .vrank { text-align: right; font-variant-numeric: tabular-nums; }
+.vg-item .arank { color: var(--warn); }
+.vg-item .vrank { color: var(--accent-2); }
+.shaky { color: var(--warn); font-weight: 700; }
