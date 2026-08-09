@@ -451,7 +451,9 @@
         const verdict = farazVerdict(fz);
         const tip = fz
           ? `Strategy by Faraz — analysts ${p.pos}#${fz.analystRank}, Vegas ${p.pos}#${fz.vegasRank}`
-            + `${vg ? ` · Vegas value $${vg.val}` : ''}`
+            + ` · books imply ${Math.round(fz.proj)} fantasy pts`
+            + `${vg ? ` (worth $${vg.val})` : ''}`
+            + `${fz.books ? ` · ${fz.books} book${fz.books > 1 ? 's' : ''}` : ''}`
           : '';
         const veg = !fz || drafted ? ''
           : verdict.kind === 'buy' ? `<span class="veg up${verdict.strength === 'strong' ? ' strong' : ''}" title="${tip}">▲${fz.gap}</span>`
@@ -778,7 +780,10 @@
 
       const row = (x) => {
         const shaky = x.fz.spread > 0.12 || (x.fz.books && x.fz.books < 2);
-        return `<div class="vg-item" data-pid="${x.p.id}">
+        const tip = `Books imply ${Math.round(x.fz.proj)} fantasy pts this season`
+          + `${x.fz.books ? ` · consensus of ${x.fz.books} book${x.fz.books > 1 ? 's' : ''}` : ''}`
+          + `${x.fz.spread ? ` · book spread ${Math.round(x.fz.spread * 100)}%` : ''}`;
+        return `<div class="vg-item" data-pid="${x.p.id}" title="${tip}">
           <span class="pos-chip pos-${x.p.pos}">${x.p.pos}</span>
           <span class="fill">${x.p.n}${shaky ? ' <span class="shaky" title="Books disagree on this line — lower confidence">≠</span>' : ''}</span>
           <span class="arank">A#${x.fz.analystRank}</span>
