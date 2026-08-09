@@ -349,3 +349,31 @@ body {
   background: #3a1d1d; border: 1px solid var(--danger); color: #ffc9c9;
 }
 .bench-item .cuff { color: var(--accent-2); }
+
+/* ---------- value board ---------- */
+.tabs button { padding: 9px 2px; font-size: 10px; }
+.vb-block { margin-bottom: 10px; }
+.vb-head {
+  display: flex; justify-content: space-between; font-size: 10px; text-transform: uppercase;
+  letter-spacing: .06em; color: var(--muted); padding: 6px 4px 3px;
+  border-bottom: 1px solid var(--border); margin-bottom: 3px;
+}
+.vb-legend { grid-template-columns: 28px 1fr 42px 42px 40px; }
+.vb-item {
+  display: grid; grid-template-columns: 28px 1fr 42px 42px 40px; gap: 4px;
+  align-items: center; padding: 4px 5px; border-radius: 6px; font-size: 12px; cursor: pointer;
+}
+.vb-item:hover { background: var(--panel-2); }
+.vb-item.pick { background: rgba(53, 194, 107, .10); }
+.vb-item .fill { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vb-item .worth, .vb-item .price, .vb-item .edge {
+  text-align: right; font-variant-numeric: tabular-nums;
+}
+.vb-item .worth { font-weight: 600; }
+.vb-item .price { color: var(--muted); }
+.bg-nums { grid-template-columns: repeat(4, 1fr); }
+.bg-nums b.bg-anchor { color: var(--accent-2); }
+.bg-bank {
+  padding: 6px 10px; font-size: 11px; background: rgba(78, 161, 255, .10);
+  border-top: 1px solid var(--border); color: #cfe3ff;
+}

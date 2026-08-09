@@ -18,7 +18,54 @@ in-draft tooling.
 | **Coach bar** | Context-aware strategy tips (sitting-down bonus, mid-draft aggression, 1-QB value guarantee, max-bid rule, don't price-enforce…) that change as the draft progresses |
 | **Vegas edge — Strategy by Faraz** | Rank divergence between the sportsbooks and the fantasy analysts: buy where Vegas ranks a player well above the analyst consensus, fade the reverse |
 | **League winners & overspend ceiling** | Who's worth breaking your budget for, how far over market you're justified going, and the hard limit past which your starting lineup can't be filled |
-| **Buying power & war chest** | Prices are set by the richest rival, not your sheet — tracks when the room goes broke and the board becomes yours at a discount, and protects the money to take it |
+| **Anchored value** | Worth comes from analysts + Vegas only and never moves with league bidding; cost moves with the room. The Value tab ranks the board in blocks of 12 by the gap between them |
+| **Value bank** | Every under-market buy banks surplus, which becomes your licence to outbid in a war and still be level on value |
+| **Key handcuffs** | Ranked league-wide by the workload waiting in front of them, since injuries happen on every roster — confirmed against analyst ranks and Vegas props |
+| **Buying power & war chest** | Tracks when the room goes broke and protects the money to take advantage |
+
+## Anchored value, the value bank, and the value board
+
+**A player's worth is anchored in the analyst board and the Vegas books — and in nothing else.**
+What the room is bidding changes what he *costs*, never what he's *worth*. The app keeps those two
+numbers strictly apart:
+
+| | |
+| --- | --- |
+| **Worth** | `anchorValue` — the analyst board blended with the Vegas books (50/50 by default, adjustable on the Vegas tab). Rock steady; league bidding cannot move it |
+| **Cost** | the analyst consensus moved by room inflation — what he'll actually sell for |
+| **Edge** | worth − cost. The whole game |
+
+Watch it work: rivals spend $1,260 and Bijan's **worth stays $74** while his **cost falls $59 → $33**,
+so his edge grows from +15 to +41. The player didn't change; the market did.
+
+### The value board — blocks of 12
+
+The **Value** tab ranks every remaining player by anchored worth, then cuts the board into blocks
+the size of your league — one nomination cycle each. Inside a block the only question is who's
+underpriced, so rows are sorted by edge and the top three are starred. Each block header shows how
+much total value is sitting in it, which tells you how hard to compete for this stretch of the
+board.
+
+### The value bank — your bidding-war ammunition
+
+Every purchase banks the difference between a player's worth and what you paid. Buy Tee Higgins
+(worth $31) for $5 and you've banked **+$26**. The header carries a running **Value Banked** figure,
+and the bid dialog turns it into a concrete licence:
+
+> 🏦 Banked **$26** of value so far — worth $74 plus that surplus means you can go to **$100** in a
+> bidding war and still be level on value across the draft.
+
+That's the honest ceiling: paying `worth + bank` leaves your cumulative surplus at exactly zero. It
+never exceeds the lineup-safe hard ceiling.
+
+### Key handcuffs — league-wide
+
+Injuries happen on every roster, so a backup's value comes from **the job waiting in front of him**,
+not from whose team the starter is on. The handcuff board ranks every backup in the pool by the
+workload he'd inherit, weighted by position (a lost bell-cow back hands over the entire job; a
+receiver doesn't), divided by what he costs — then checks the analysts and books actually support
+him. A `?` marks a name with no projection behind it: speculation, not insurance. 🔗 marks one who
+happens to back up a player you own, which is a bonus rather than the point.
 
 ## Buying power & the bench war chest
 
