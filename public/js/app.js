@@ -31,7 +31,8 @@
   function freshState() {
     const teams = 12;
     return {
-      settings: { teams, budget: 200, rosterSize: 16, myTeam: 0 },
+      settings: { teams, budget: 200, rosterSize: 16, myTeam: 0, waivers: 'active' },
+      byes: null,
       teams: Array.from({ length: teams }, (_, i) => ({ name: `Team ${i + 1}`, spent: 0, picks: [] })),
       players: DEFAULT_PLAYERS.map((p, i) => ({
         id: `p${i}`, n: p.n, pos: p.pos, tm: p.tm, tier: p.tier, v: p.v,
@@ -75,6 +76,8 @@
         state = JSON.parse(raw);
         // Backfill fields added after this save was written.
         state.vegas = Object.assign(freshVegas(), state.vegas || {});
+        if (!state.settings.waivers) state.settings.waivers = 'active';
+        if (state.byes === undefined) state.byes = null;
         return;
       }
     } catch (_) { /* fall through */ }
@@ -334,6 +337,214 @@
 
   const openStartingSlots = (teamIdx) => lineupCtx().openByTeam[teamIdx] || [];
 
+  const benchSpotsLeft = (teamIdx) =>
+    Math.max(0, teamSpotsLeft(teamIdx) - openStartingSlots(teamIdx).length);
+
+  // ---- the endgame market -------------------------------------------------
+  /**
+   * What the late draft will look like.
+   *
+   * Once every team has paid for its starting lineup, whatever money is left
+   * has to chase whatever players are left. When the room has spent big early
+   * that ratio collapses and $20 players sell for $10 — which is exactly the
+   * window worth holding money for. When the room has hoarded, it inverts and
+   * scraps go for real money.
+   */
+  function marketPressure() {
+    const me = state.settings.myTeam;
+    const rivals = state.teams
+      .map((_, i) => i)
+      .filter((i) => i !== me && teamSpotsLeft(i) > 0)
+      .map((i) => teamMaxBid(i))
+      .sort((a, b) => b - a);
+    return {
+      rivals,
+      top: rivals[0] || 0,
+      second: rivals[1] || 0,
+      median: rivals[Math.floor(rivals.length / 2)] || 0,
+      count: rivals.length,
+    };
+  }
+
+  /**
+   * What a player will actually cost, as opposed to what he's worth.
+   *
+   * An auction price is set by the second-most-motivated bidder, so a player
+   * can never cost more than the best-funded rival can bid plus a dollar. Once
+   * the room has spent up, that ceiling collapses and genuinely good players
+   * sell for a fraction of their value — which is the whole reason to keep
+   * money back rather than convert every dollar into starters early.
+   */
+  function clearingPrice(p) {
+    const market = adjValue(p, lineupCtx().infl);
+    const mp = marketPressure();
+    return Math.max(1, Math.min(market, mp.top + 1));
+  }
+
+  /** Aggregate read on how cheap the remaining market is for me. */
+  function endgameOutlook() {
+    const ctx = lineupCtx();
+    const mp = marketPressure();
+    const pool = undrafted()
+      .filter((p) => p.pos !== 'K' && p.pos !== 'DST')
+      .sort((a, b) => adjValue(b, ctx.infl) - adjValue(a, ctx.infl))
+      .slice(0, 30);
+    let market = 0, clears = 0;
+    for (const p of pool) {
+      const m = adjValue(p, ctx.infl);
+      market += m;
+      clears += Math.max(1, Math.min(m, mp.top + 1));
+    }
+    const best = pool[0] ? adjValue(pool[0], ctx.infl) : 0;
+    return {
+      discount: market > 0 ? clears / market : 1,
+      rivalTop: mp.top,
+      rivalMedian: mp.median,
+      bestValue: best,
+      bestName: pool[0] ? pool[0].n : null,
+      // How many of the best remaining players rivals simply cannot afford.
+      outOfRivalReach: pool.filter((p) => adjValue(p, ctx.infl) > mp.top + 1).length,
+    };
+  }
+
+  /** Where my spending power sits against the rest of the room. */
+  function biddingPower() {
+    const me = state.settings.myTeam;
+    const mine = teamMaxBid(me);
+    const others = state.teams
+      .map((_, i) => i)
+      .filter((i) => i !== me && teamSpotsLeft(i) > 0)
+      .map((i) => teamMaxBid(i));
+    const above = others.filter((m) => m > mine).length;
+    const sorted = others.slice().sort((a, b) => b - a);
+    return {
+      mine,
+      above,
+      rank: above + 1,
+      field: others.length + 1,
+      top: sorted[0] || 0,
+      median: sorted[Math.floor(sorted.length / 2)] || 0,
+    };
+  }
+
+  // ---- bench targets ------------------------------------------------------
+  /** Players who back up someone already on my roster. */
+  function handcuffSet(teamIdx) {
+    const mine = picksWithPos(teamIdx)
+      .map((pk) => playerById(pk.pid))
+      .filter((p) => p && ['RB', 'WR', 'TE', 'QB'].includes(p.pos));
+    const out = new Map();
+    if (!mine.length) return out;
+    for (const p of undrafted()) {
+      if (!p.tm || p.tm === 'FA') continue;
+      const covers = mine.find((m) => m.tm === p.tm && m.pos === p.pos && m.v > p.v);
+      if (covers) {
+        // Losing a bell-cow back hands his replacement the entire workload;
+        // the same is far less true at receiver.
+        const leverage = p.pos === 'RB' ? 1 : p.pos === 'TE' ? 0.6 : 0.5;
+        out.set(p.id, { covers, leverage });
+      }
+    }
+    return out;
+  }
+
+  const byeFor = (p) => (state.byes && p.tm ? state.byes[p.tm] || null : null);
+
+  let benchCache = null;
+
+  function benchMap() {
+    const me = state.settings.myTeam;
+    const key = [state.log.length, me, state.vegas.stamp, state.settings.waivers,
+      state.byes ? Object.keys(state.byes).length : 0].join('|');
+    if (benchCache && benchCache.key === key) return benchCache.map;
+
+    const ctx = lineupCtx();
+    const cuffs = handcuffSet(me);
+    const waivers = state.settings.waivers || 'active';
+
+    // Bye weeks my current starters are off, per position.
+    const starterByes = {};
+    for (const pk of picksWithPos(me)) {
+      const p = playerById(pk.pid);
+      const b = p && byeFor(p);
+      if (b) (starterByes[p.pos] = starterByes[p.pos] || []).push(b);
+    }
+
+    // How thin each position is getting, league-wide.
+    const scarcity = {};
+    for (const pos of ['QB', 'RB', 'WR', 'TE']) {
+      const left = undrafted().filter((p) => p.pos === pos && p.v >= 3).length;
+      const need = (ctx.demand[pos] || 0) + (ctx.demand.FLX || 0) * 0.3;
+      scarcity[pos] = Math.max(0, Math.min(1, need / Math.max(1, left)));
+    }
+
+    const rows = [];
+    for (const p of undrafted()) {
+      if (p.pos === 'K' || p.pos === 'DST') continue;
+      const market = adjValue(p, ctx.infl);
+      const late = clearingPrice(p);
+      const w = winnerFor(p);
+      const proj = w && w.proj !== null ? w.proj : null;
+
+      // Upside per dollar: production relative to what he'll actually cost late.
+      const perDollar = proj !== null ? proj / Math.max(1, late) : (p.v / Math.max(1, late)) * 6;
+      const cuff = cuffs.get(p.id);
+      const bye = byeFor(p);
+      const posByes = starterByes[p.pos] || [];
+      const byeFit = bye === null || !posByes.length ? 0.5
+        : posByes.includes(bye) ? 0 : 1;
+
+      rows.push({
+        p, market, late, proj,
+        perDollar,
+        handcuff: cuff ? cuff.leverage : 0,
+        cuffFor: cuff ? cuff.covers.n : null,
+        bye,
+        byeFit,
+        scarcity: scarcity[p.pos] || 0,
+        availability: w ? w.availability : null,
+      });
+    }
+
+    // Normalise upside across the pool so the weights mean something.
+    const maxPer = Math.max(1, ...rows.map((r) => r.perDollar));
+    const map = new Map();
+    for (const r of rows) {
+      const parts = {
+        handcuff: r.handcuff,
+        upside: r.perDollar / maxPer,
+        bye: r.byeFit,
+        scarcity: r.scarcity,
+      };
+      map.set(r.p.id, { ...r, parts, score: LineupEngine.benchScore(parts, waivers) });
+    }
+    benchCache = { key, map };
+    return map;
+  }
+
+  const benchFor = (p) => benchMap().get(p.id) || null;
+
+  /**
+   * The bench war chest: what the best available bench targets will cost once
+   * the market softens, floored so there's always enough left to win a
+   * contested bid rather than being priced out of every nomination.
+   */
+  function benchReserveFor(teamIdx) {
+    const spots = benchSpotsLeft(teamIdx);
+    if (spots <= 0) return 0;
+    if (teamIdx !== state.settings.myTeam) return spots; // opponents: cheap estimate
+
+    // Cost of the bench targets you'd actually want, at what they'll clear for.
+    const mp = marketPressure();
+    const perSpot = Math.max(2, Math.min(mp.top + 1, mp.median + 2));
+    const expected = spots * perSpot;
+
+    // Cap it so the war chest never eats the starting lineup: bench money is
+    // there to win a late bid or two, not to sit idle while your starters rot.
+    const cap = Math.max(spots, Math.round(teamRemaining(teamIdx) * 0.25));
+    return Math.max(spots, Math.min(expected, cap));
+  }
+
   /** Highest bid that still leaves a complete, startable lineup. */
   function safeMaxFor(p, teamIdx) {
     const i = teamIdx === undefined ? state.settings.myTeam : teamIdx;
@@ -345,6 +556,7 @@
       floors: ctx.floors,
       pos: p.pos,
       hardMax: teamMaxBid(i),
+      benchReserve: benchReserveFor(i),
     });
   }
 
@@ -453,6 +665,7 @@
       floors: ctx.marketFloors,
       pos: p.pos,
       hardMax: teamMaxBid(i),
+      benchReserve: benchReserveFor(i),
     });
   }
 
@@ -603,6 +816,17 @@
 
     // 1-QB guarantee reminder while I still need a QB
     if (myNeeds.includes('QB') && progress > 0.2 && mySpots > 3) tips.push({ t: STRATEGY_TIPS.qbGuarantee });
+
+    // The buyer's window: rivals can no longer cover the board.
+    if (mySpots > 0 && state.log.length > state.settings.teams) {
+      const out = endgameOutlook();
+      const power = biddingPower();
+      if (out.outOfRivalReach > 0 && power.mine > out.rivalTop) {
+        tips.push({ t: `🟢 Buyer's window open: ${out.outOfRivalReach} of the best players left are beyond every rival's max bid ($${out.rivalTop}). You can take them for ~$${out.rivalTop + 1}. Spend now.` });
+      } else if (power.above >= Math.ceil((power.field - 1) * 0.7)) {
+        tips.push({ t: `🚨 ${power.above} of ${power.field - 1} rivals can outbid you ($${power.mine} max). You'll lose contested nominations — stop bidding to your ceiling on players you don't need.`, alert: true });
+      }
+    }
 
     // biggest Vegas-vs-analyst divergence at a position I still need
     if (vegasActive() && mySpots > 2) {
@@ -1100,6 +1324,82 @@
     $$('#tab-vegas .vg-item').forEach((n) => n.addEventListener('click', () => openDraftModal(n.dataset.pid)));
   }
 
+  /** Where your money sits against the room, and what the endgame looks like. */
+  function renderBuyingPower() {
+    const me = state.settings.myTeam;
+    const power = biddingPower();
+    const out = endgameOutlook();
+    const chest = benchReserveFor(me);
+    const bench = benchSpotsLeft(me);
+    const disc = out.discount;
+
+    // An auction price is set by the best-funded rival, never by the sheet.
+    const mood = out.outOfRivalReach > 0
+      ? { cls: 'good', txt: `🟢 <b>Buyer's market.</b> ${out.outOfRivalReach} of the best players left are worth more than the richest rival can even bid ($${out.rivalTop}) — including ${out.bestName} at $${out.bestValue}. They're yours for about $${out.rivalTop + 1}. This is the window you held money for.` }
+      : disc >= 0.97
+      ? { cls: 'bad', txt: `🔴 <b>Full price.</b> The top rival can bid $${out.rivalTop}, which still covers everyone left (best is ${out.bestName} at $${out.bestValue}). No discount yet — bargains only appear once the room overspends.` }
+      : { cls: 'ok', txt: `🟡 <b>Softening.</b> Top rival is down to $${out.rivalTop} and the board is clearing about ${Math.round((1 - disc) * 100)}% under value. Getting close to the window.` };
+
+    const rankCls = power.above === 0 ? 'good' : power.above >= state.settings.teams - 3 ? 'bad' : 'ok';
+    const lockout = power.above >= Math.ceil((power.field - 1) * 0.7)
+      ? `<div class="bp-alert">🚨 ${power.above} of ${power.field - 1} opponents can outbid you. You'll lose most contested nominations from here — stop bidding to your ceiling on non-essentials.</div>`
+      : '';
+
+    return `
+      <h4 class="vg-sec">💰 Buying power</h4>
+      <div class="bp-grid">
+        <div><label>Your max bid</label><b class="${rankCls}">$${power.mine}</b></div>
+        <div><label>Room rank</label><b class="${rankCls}">#${power.rank} of ${power.field}</b></div>
+        <div><label>Top rival</label><b>$${power.top}</b></div>
+        <div><label>War chest</label><b>$${chest}</b></div>
+      </div>
+      <p class="muted bp-note ${mood.cls}">${mood.txt}</p>
+      ${bench ? `<p class="muted">$${chest} is held back for ${bench} bench spot${bench > 1 ? 's' : ''} — not to buy depth, but so you can still win a bid when a good player falls late.</p>` : ''}
+      ${lockout}`;
+  }
+
+  /** Bench buys: insurance and upside that waivers can't hand you. */
+  function renderBenchTargets() {
+    const me = state.settings.myTeam;
+    const bench = benchSpotsLeft(me);
+    if (bench <= 0) return '';
+    // Not "players who can't start" — early on, every skill player could fill a
+    // slot. A bench target is one your bench money can actually reach.
+    const chest = benchReserveFor(me);
+    const perSpot = Math.max(3, Math.round((chest / bench) * 2.5));
+    const rows = Array.from(benchMap().values())
+      .filter((b) => b.late <= perSpot)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 10);
+    if (!rows.length) return '';
+
+    const waivers = state.settings.waivers || 'active';
+    const why = (b) => {
+      const bits = [];
+      if (b.cuffFor) bits.push(`handcuffs ${b.cuffFor}`);
+      if (b.proj !== null) bits.push(`${Math.round(b.proj)} pts`);
+      if (b.bye) bits.push(`bye ${b.bye}`);
+      if (!bits.length) bits.push('value');
+      return bits.join(' · ');
+    };
+
+    return `
+      <h4 class="vg-sec">🪑 Bench targets — ${bench} spot${bench > 1 ? 's' : ''} to fill</h4>
+      ${rows.map((b) => `
+        <div class="win-item bench-item" data-pid="${b.p.id}" title="${why(b)}">
+          <span class="pos-chip pos-${b.p.pos}">${b.p.pos}</span>
+          <span class="fill">${b.p.n}${b.cuffFor ? ' <span class="cuff">🔗</span>' : ''}</span>
+          <span class="wbar"><i style="width:${Math.round(b.score * 100)}%"></i></span>
+          <span class="cons">${b.bye || '—'}</span>
+          <span class="paybox"><b>~$${b.late}</b><em>mkt $${b.market}</em></span>
+        </div>`).join('')}
+      <p class="muted">🔗 handcuffs someone you already own. <b>~$</b> is what he should cost once
+      the room's money dries up. ${waivers === 'active'
+        ? 'Your league streams easily, so these are weighted toward handcuffs and breakout upside — the two things waivers can\'t replace.'
+        : 'Weighted for a league where waivers won\'t bail you out.'}
+      ${state.byes ? '' : 'Bye column is empty until you fetch bye weeks (⚙︎ → Fetch bye weeks).'}</p>`;
+  }
+
   function renderWinners() {
     const el = $('#tab-winners');
     const me = state.settings.myTeam;
@@ -1152,12 +1452,14 @@
         <span>Budget <b>$${teamRemaining(me)}</b></span>
         <span>Bench spots <b>${Math.max(0, teamSpotsLeft(me) - open.length)}</b></span>
       </div>
+      ${renderBuyingPower()}
       <h4 class="vg-sec">🧱 Cost to fill your remaining starting slots</h4>
       <div class="needs">${slotLine}</div>
       <p class="muted">That reserve is what the <b>max</b> figure protects. Spend past it and one of
       those slots goes unfilled.</p>
       <div class="win-head"><span></span><span>Player</span><span>Winner</span><span>Steady</span><span>Pay to</span></div>
       ${needed.map(row).join('') || '<div class="muted">No starters left to chase.</div>'}
+      ${renderBenchTargets()}
       ${anyEstimated ? '<p class="muted">⚠️ Some scores are estimated from your board values because no Vegas line covers that player — load lines for real consistency and availability numbers.</p>' : ''}
       <p class="muted"><b>$X</b> is the most you're justified paying; <b>mkt</b> is what he'd
       normally go for. The gap between them is your licensed overspend — deliberately small for
@@ -1167,6 +1469,7 @@
     $$('#tab-winners .win-item').forEach((n) =>
       n.addEventListener('click', () => openDraftModal(n.dataset.pid)));
     void infl;
+    void ctx;
   }
 
   // ---------------------------------------------------------------------------
@@ -1431,6 +1734,10 @@
     $('#setBudget').value = state.settings.budget;
     $('#setRoster').value = state.settings.rosterSize;
     $('#setTeamNames').value = state.teams.map((t) => t.name).join('\n');
+    $('#setWaivers').value = state.settings.waivers || 'active';
+    $('#byeStatus').textContent = state.byes
+      ? `${Object.keys(state.byes).length} teams loaded`
+      : 'not loaded';
     const sel = $('#setMyTeam');
     sel.innerHTML = state.teams.map((t, i) =>
       `<option value="${i}"${i === state.settings.myTeam ? ' selected' : ''}>${t.name}</option>`).join('');
@@ -1448,6 +1755,7 @@
     state.settings.teams = nTeams;
     names.forEach((n, i) => { if (state.teams[i]) state.teams[i].name = n; });
     state.settings.myTeam = Math.min(nTeams - 1, Number($('#setMyTeam').value) || 0);
+    state.settings.waivers = $('#setWaivers').value || 'active';
     hide('#modalSettings');
     save(); renderAll();
   }
@@ -1518,6 +1826,29 @@
     }
   }
 
+  /**
+   * Bye weeks come from ESPN's public pro-team schedule, which needs no auth —
+   * so Sleeper drafters get them too. Pulled automatically on connect.
+   */
+  async function fetchByes(interactive) {
+    const year = state.conn.year
+      || (state.conn.type === 'sleeper' ? new Date().getFullYear() : new Date().getFullYear());
+    const status = $('#byeStatus');
+    if (interactive && status) status.textContent = 'fetching…';
+    try {
+      const r = await fetch(`/api/byes?year=${encodeURIComponent(year)}`);
+      const b = await r.json();
+      if (!r.ok) throw new Error(b.error || `HTTP ${r.status}`);
+      state.byes = b;
+      save();
+      if (status) status.textContent = `${Object.keys(b).length} teams loaded`;
+      renderAll();
+    } catch (err) {
+      if (status) status.textContent = String(err.message || err);
+      if (interactive) console.warn('bye fetch failed:', err);
+    }
+  }
+
   function connError(msg) {
     const el = $('#connError');
     el.textContent = msg;
@@ -1545,6 +1876,7 @@
       save();
       hide('#modalConnect');
       startPolling();
+      fetchByes(false);
       renderAll();
       openSettings(); // let the user pick which team is theirs
     } catch (err) {
@@ -1573,6 +1905,7 @@
       save();
       hide('#modalConnect');
       startPolling();
+      fetchByes(false);
       renderAll();
       openSettings();
     } catch (err) {
@@ -1651,6 +1984,7 @@
 
     // settings
     $('#btnSettings').addEventListener('click', openSettings);
+    $('#btnFetchByes').addEventListener('click', () => fetchByes(true));
     $('#btnSaveSettings').addEventListener('click', saveSettings);
     $('#btnResetDraft').addEventListener('click', resetDraft);
 

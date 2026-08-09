@@ -67,10 +67,43 @@ window.LineupEngine = (function () {
     if (fillsStarter) open.splice(idx, 1);
 
     const reserve = open.reduce((s, slot) => s + Math.max(1, o.floors[slot] || 1), 0);
-    // A player who only makes your bench consumes a bench dollar instead.
-    const benchCost = fillsStarter ? benchSpots : Math.max(0, benchSpots - 1);
+
+    // Bench money is a war chest, not loose change: nominations come at random,
+    // so the ability to bid late is what lets you take the bargains that appear
+    // once the rest of the room is broke. benchReserve is the whole bench
+    // budget; a player who only makes your bench spends one slot's share of it.
+    const totalBench = o.benchReserve === undefined ? benchSpots : o.benchReserve;
+    const perBench = benchSpots > 0 ? totalBench / benchSpots : 0;
+    const benchAfter = fillsStarter ? benchSpots : Math.max(0, benchSpots - 1);
+    const benchCost = Math.round(perBench * benchAfter);
+
     const ceiling = o.budget - reserve - benchCost;
     return Math.max(1, Math.min(o.hardMax, Math.floor(ceiling)));
+  }
+
+  /**
+   * Bench value. A bench player never scores for you on a normal week, so he
+   * earns his spot three other ways: by replacing a starter you lose, by
+   * covering a bye, or by outgrowing what you paid. Weights shift with how much
+   * the waiver wire can replace — in a streaming league generic depth is free,
+   * so the only bench spots worth paying for are the ones waivers can't hand
+   * you: the handcuff to your own stud, and the breakout nobody has noticed.
+   */
+  const BENCH_WEIGHTS = {
+    active: { handcuff: 0.35, upside: 0.45, bye: 0.10, scarcity: 0.10 },
+    normal: { handcuff: 0.30, upside: 0.35, bye: 0.20, scarcity: 0.15 },
+    locked: { handcuff: 0.25, upside: 0.30, bye: 0.20, scarcity: 0.25 },
+  };
+
+  function benchScore(parts, waivers) {
+    const w = BENCH_WEIGHTS[waivers] || BENCH_WEIGHTS.normal;
+    const clamp = (n) => Math.max(0, Math.min(1, n || 0));
+    return (
+      clamp(parts.handcuff) * w.handcuff +
+      clamp(parts.upside) * w.upside +
+      clamp(parts.bye) * w.bye +
+      clamp(parts.scarcity) * w.scarcity
+    );
   }
 
   /**
@@ -138,10 +171,12 @@ window.LineupEngine = (function () {
   return {
     STARTER_SLOTS,
     FLEX_POS,
+    BENCH_WEIGHTS,
     slotEligible,
     startersPerTeam,
     assignSlots,
     safeMax,
+    benchScore,
     consistency,
     availability,
     winnerScore,

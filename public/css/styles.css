@@ -334,3 +334,18 @@ body {
 .paybox.unaffordable b { color: var(--muted); text-decoration: line-through; }
 .paybox.unaffordable em { color: var(--danger); }
 .bg-tier.broke { background: #3a1d1d; color: #ffc9c9; }
+
+/* ---------- buying power / bench targets ---------- */
+.bp-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin-bottom: 6px; }
+.bp-grid div { background: var(--panel-2); border-radius: 7px; padding: 6px 4px; text-align: center; }
+.bp-grid label { display: block; font-size: 9px; text-transform: uppercase; color: var(--muted); }
+.bp-grid b { font-size: 14px; font-variant-numeric: tabular-nums; }
+.bp-grid b.good { color: var(--accent); } .bp-grid b.bad { color: var(--danger); }
+.bp-note { padding: 5px 8px; border-radius: 6px; border-left: 3px solid var(--border); }
+.bp-note.good { border-left-color: var(--accent); }
+.bp-note.bad { border-left-color: var(--danger); }
+.bp-alert {
+  margin-top: 6px; padding: 7px 9px; border-radius: 8px; font-size: 12px;
+  background: #3a1d1d; border: 1px solid var(--danger); color: #ffc9c9;
+}
+.bench-item .cuff { color: var(--accent-2); }

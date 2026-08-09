@@ -172,6 +172,39 @@ function netError(err) {
   return msg;
 }
 
+// ---------------------------------------------------------------------------
+// NFL bye weeks. ESPN publishes pro-team schedules without auth, so this works
+// for Sleeper drafters too.
+// GET /api/byes?year=2026  ->  { "BUF": 12, "KC": 6, ... }
+// ---------------------------------------------------------------------------
+const byeCache = new Map();
+
+app.get('/api/byes', async (req, res) => {
+  const { year } = req.query;
+  if (!/^\d{4}$/.test(year || '')) return res.status(400).json({ error: 'year is required' });
+  const DAY = 24 * 60 * 60 * 1000;
+  const hit = byeCache.get(year);
+  if (hit && Date.now() - hit.time < DAY) return res.json(hit.data);
+  try {
+    const url = `${ESPN_BASE}/seasons/${year}?view=proTeamSchedules_wl`;
+    const r = await fetch(url, { headers: espnHeaders({}) });
+    if (!r.ok) return res.status(r.status).json({ error: `ESPN responded ${r.status}` });
+    const data = await r.json();
+    const teams = data?.settings?.proTeams || [];
+    const byes = {};
+    for (const t of teams) {
+      if (t.abbrev && t.byeWeek) byes[String(t.abbrev).toUpperCase()] = t.byeWeek;
+    }
+    if (!Object.keys(byes).length) {
+      return res.status(502).json({ error: 'ESPN returned no bye weeks for that season yet' });
+    }
+    byeCache.set(year, { time: Date.now(), data: byes });
+    res.json(byes);
+  } catch (err) {
+    res.status(502).json({ error: netError(err) });
+  }
+});
+
 app.get('/api/odds/status', async (req, res) => {
   const key = req.query.key;
   if (!key) return res.status(400).json({ error: 'An Odds API key is required' });

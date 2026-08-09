@@ -17,7 +17,52 @@ in-draft tooling.
 | **Room inflation** | Live inflation multiplier (remaining money ÷ remaining sheet value) and inflation-adjusted prices next to your sheet values |
 | **Coach bar** | Context-aware strategy tips (sitting-down bonus, mid-draft aggression, 1-QB value guarantee, max-bid rule, don't price-enforce…) that change as the draft progresses |
 | **Vegas edge — Strategy by Faraz** | Rank divergence between the sportsbooks and the fantasy analysts: buy where Vegas ranks a player well above the analyst consensus, fade the reverse |
-| **League winners & overspend ceiling** | Who's worth breaking your budget for, how far over market you're justified going, and the hard limit past which your starting lineup can't be filled — bench production excluded throughout |
+| **League winners & overspend ceiling** | Who's worth breaking your budget for, how far over market you're justified going, and the hard limit past which your starting lineup can't be filled |
+| **Buying power & war chest** | Prices are set by the richest rival, not your sheet — tracks when the room goes broke and the board becomes yours at a discount, and protects the money to take it |
+
+## Buying power & the bench war chest
+
+Nominations come up at random, so you can't schedule your spending. If you convert every dollar
+into starters early, you arrive at the back half of the draft at $1 a slot — and every opponent
+with cash left outbids you on reflex. Meanwhile the *reverse* is the biggest edge in the room: when
+everyone else has overspent, a $20 player sells for $10 and only the team that kept money can take
+him.
+
+So the bench reserve is **not a depth budget — it's a war chest**, and the app models it as one.
+
+### Prices are set by rivals, not by your sheet
+
+An auction price is set by the best-funded bidder who wants the player, so nobody can cost more
+than the richest rival's max bid plus a dollar. The **Buying power** panel reports:
+
+- **Your max bid** and **room rank** — where your spending power sits in the field
+- **Top rival** — the highest bid anyone else can currently make
+- **War chest** — what's held back for your remaining bench spots
+
+Underneath it names the market state directly:
+
+> 🟢 **Buyer's market.** 30 of the best players left are worth more than the richest rival can even
+> bid ($1) — including De'Von Achane at $7. They're yours for about $2. This is the window you held
+> money for.
+
+…versus 🔴 **Full price** when rivals can still cover the whole board. The coach bar fires the same
+alert the moment the window opens, and the opposite one when 70%+ of the room can outbid you.
+
+### What makes a bench player worth paying for
+
+In a streaming league generic depth is free — you can get that off waivers. What waivers *cannot*
+hand you is the handcuff to your own stud or a breakout before he breaks out. So the bench score
+weights four factors, tilted by your **waiver setting** (⚙︎ → Waiver wire):
+
+| Factor | Why |
+| --- | --- |
+| **Handcuff** 🔗 | Backs up a player you already own. Lose your bell-cow and you inherit the entire workload — weighted highest for RBs, where the workload transfer is near-total |
+| **Upside vs. cost** | Production per dollar at what he'll *actually clear for*, not sheet value |
+| **Bye coverage** | Penalised if he shares a bye with your starter at that position, rewarded if he covers it |
+| **Scarcity insurance** | Depth where the pool is drying up — dialled down in streaming leagues, up in locked ones |
+
+Bye weeks come from ESPN's public pro-team schedule (no auth, so Sleeper drafters get them too).
+They're pulled automatically when you connect a draft, or on demand via ⚙︎ → **Fetch bye weeks**.
 
 ## League winners & the overspend ceiling
 
