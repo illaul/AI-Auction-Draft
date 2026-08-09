@@ -267,6 +267,214 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Starting-lineup engine — bench points are worth zero
+  // ---------------------------------------------------------------------------
+  function picksWithPos(teamIdx) {
+    return state.teams[teamIdx].picks
+      .map((pk) => {
+        const p = playerById(pk.pid);
+        return p ? { pid: pk.pid, pos: p.pos, price: pk.price, n: p.n } : null;
+      })
+      .filter(Boolean);
+  }
+
+  let lineupCache = null;
+
+  /**
+   * Everything the safe-max maths needs, rebuilt once per draft event:
+   * each team's unfilled starting slots, league-wide demand for each slot,
+   * and what a startable option at each slot currently costs.
+   */
+  function lineupCtx() {
+    const key = [state.log.length, state.settings.myTeam, state.settings.rosterSize,
+      state.settings.teams, state.vegas.stamp, state.vegas.blend].join('|');
+    if (lineupCache && lineupCache.key === key) return lineupCache.ctx;
+
+    const infl = inflation();
+    const openByTeam = state.teams.map((_, i) => LineupEngine.assignSlots(picksWithPos(i)).open);
+    const demand = {};
+    for (const list of openByTeam) for (const s of list) demand[s] = (demand[s] || 0) + 1;
+
+    // Slots compete for overlapping players: every open FLEX also chases the
+    // RB/WR/TE pool, so demand for a position is its own openings plus its
+    // share of the flexes. Ignoring that made FLEX look far scarcer than RB.
+    const FLEX_SHARE = { RB: 0.45, WR: 0.45, TE: 0.10 };
+    const skillDemand = (demand.RB || 0) + (demand.WR || 0) + (demand.TE || 0) + (demand.FLX || 0);
+    const effDemand = (slot) => {
+      if (slot === 'FLX') return skillDemand;
+      if (FLEX_SHARE[slot]) return (demand[slot] || 0) + (demand.FLX || 0) * FLEX_SHARE[slot];
+      return demand[slot] || 0;
+    };
+
+    // Two reserve levels per slot:
+    //   floor  — the cheapest player you could still START there once the rest
+    //            of the room has filled its own holes. Guarantees a legal,
+    //            playable lineup; this is what the hard ceiling protects.
+    //   market — what a genuinely competitive starter there costs right now.
+    //            Overspending past this doesn't break the lineup, it just makes
+    //            the rest of it below average.
+    const floors = {};
+    const marketFloors = {};
+    for (const slot of ['QB', 'RB', 'WR', 'TE', 'FLX', 'K', 'DST']) {
+      const cands = undrafted()
+        .filter((p) => LineupEngine.slotEligible(slot, p.pos))
+        .sort((a, b) => adjValue(b, infl) - adjValue(a, infl));
+      if (!cands.length) { floors[slot] = 1; marketFloors[slot] = 1; continue; }
+      const d = effDemand(slot);
+      const floorIdx = Math.min(cands.length - 1, Math.max(0, Math.round(d)));
+      const mktIdx = Math.min(cands.length - 1, Math.max(0, Math.round(d * 0.4)));
+      floors[slot] = Math.max(1, adjValue(cands[floorIdx], infl));
+      marketFloors[slot] = Math.max(floors[slot], adjValue(cands[mktIdx], infl));
+    }
+
+    const ctx = { infl, openByTeam, demand, floors, marketFloors };
+    lineupCache = { key, ctx };
+    return ctx;
+  }
+
+  const openStartingSlots = (teamIdx) => lineupCtx().openByTeam[teamIdx] || [];
+
+  /** Highest bid that still leaves a complete, startable lineup. */
+  function safeMaxFor(p, teamIdx) {
+    const i = teamIdx === undefined ? state.settings.myTeam : teamIdx;
+    const ctx = lineupCtx();
+    return LineupEngine.safeMax({
+      budget: teamRemaining(i),
+      spotsLeft: teamSpotsLeft(i),
+      openSlots: ctx.openByTeam[i] || [],
+      floors: ctx.floors,
+      pos: p.pos,
+      hardMax: teamMaxBid(i),
+    });
+  }
+
+  /** Does this player step straight into my starting lineup? */
+  function fillsStarter(p, teamIdx) {
+    const open = openStartingSlots(teamIdx === undefined ? state.settings.myTeam : teamIdx);
+    return open.includes(p.pos) || (LineupEngine.FLEX_POS.includes(p.pos) && open.includes('FLX'));
+  }
+
+  // ---- league winners ------------------------------------------------------
+  let winnerCache = null;
+
+  /** Points a typical STARTER at this position produces — the bar that matters. */
+  function starterBaseline(pos, projByPos) {
+    const list = projByPos[pos];
+    if (!list || !list.length) return 0;
+    const n = Math.round(state.settings.teams * LineupEngine.startersPerTeam(pos));
+    return VegasEngine.replacementLevel(list.map((x) => ({ proj: x })), Math.max(1, n));
+  }
+
+  function winnerMap() {
+    const key = [state.log.length, state.vegas.stamp, state.vegas.scoring, state.vegas.compare,
+      state.settings.teams, state.settings.rosterSize, vegasActive()].join('|');
+    if (winnerCache && winnerCache.key === key) return winnerCache.map;
+
+    const scoring = VegasEngine.SCORING[state.vegas.scoring] || VegasEngine.SCORING.ppr;
+    const lines = activeLines();
+    const hasVegas = vegasActive();
+
+    // Projection per player: Vegas when we have it, otherwise the sheet value
+    // stands in so the board still ranks sensibly without lines loaded.
+    const entries = [];
+    for (const p of state.players) {
+      if (p.pos === 'K' || p.pos === 'DST' || !p.pos) continue;
+      const fz = hasVegas ? farazFor(p) : null;
+      const line = hasVegas ? lines[VegasEngine.normName(p.n)] : null;
+      const proj = fz ? fz.proj : null;
+      entries.push({ p, fz, line, proj });
+    }
+
+    const projByPos = {};
+    for (const e of entries) {
+      if (e.proj === null) continue;
+      (projByPos[e.p.pos] = projByPos[e.p.pos] || []).push(e.proj);
+    }
+    for (const list of Object.values(projByPos)) list.sort((a, b) => b - a);
+    const baselines = {};
+    for (const pos of Object.keys(projByPos)) baselines[pos] = starterBaseline(pos, projByPos);
+
+    // Without projections, fall back to dollars above a startable price.
+    const valBaseline = {};
+    for (const pos of ['QB', 'RB', 'WR', 'TE']) {
+      const vals = state.players.filter((x) => x.pos === pos).map((x) => x.v).sort((a, b) => b - a);
+      const n = Math.round(state.settings.teams * LineupEngine.startersPerTeam(pos));
+      valBaseline[pos] = vals[Math.min(vals.length - 1, Math.max(0, n - 1))] || 0;
+    }
+
+    const raw = [];
+    for (const e of entries) {
+      const cons = e.line ? LineupEngine.consistency(e.line, scoring) : null;
+      const avail = e.line ? LineupEngine.availability(e.line) : null;
+      const agreement = e.fz
+        ? 1 - Math.min(0.35, Math.abs(e.fz.gap) / Math.max(2, e.fz.pool))
+        : null;
+      const pas = e.proj !== null
+        ? e.proj - (baselines[e.p.pos] || 0)
+        // dollar-space fallback, rescaled so the two are broadly comparable
+        : (e.p.v - (valBaseline[e.p.pos] || 0)) * 3;
+      const score = LineupEngine.winnerScore({
+        pointsAboveStarter: pas, availability: avail, consistency: cons, agreement,
+      });
+      raw.push({ e, cons, avail, agreement, pas, score });
+    }
+
+    const top = Math.max(1, ...raw.map((r) => r.score));
+    const map = new Map();
+    for (const r of raw) {
+      map.set(r.e.p.id, {
+        score: r.score,
+        pct: Math.max(0, Math.min(1, r.score / top)),
+        pas: r.pas,
+        consistency: r.cons,
+        availability: r.avail,
+        agreement: r.agreement,
+        proj: r.e.proj,
+        estimated: r.e.proj === null,
+      });
+    }
+    winnerCache = { key, map };
+    return map;
+  }
+
+  const winnerFor = (p) => winnerMap().get(p.id) || null;
+
+  /**
+   * The competitive ceiling: pay more than this and the rest of your starting
+   * lineup drops below market-average, even though it's still fieldable.
+   */
+  function competitiveMaxFor(p, teamIdx) {
+    const i = teamIdx === undefined ? state.settings.myTeam : teamIdx;
+    const ctx = lineupCtx();
+    return LineupEngine.safeMax({
+      budget: teamRemaining(i),
+      spotsLeft: teamSpotsLeft(i),
+      openSlots: ctx.openByTeam[i] || [],
+      floors: ctx.marketFloors,
+      pos: p.pos,
+      hardMax: teamMaxBid(i),
+    });
+  }
+
+  /** Market price, safe ceiling, and the justified stretch for one player. */
+  function bidGuide(p) {
+    const infl = inflation();
+    const market = adjValue(p, infl);
+    const safe = safeMaxFor(p);
+    const competitive = competitiveMaxFor(p);
+    const w = winnerFor(p);
+    const cap = LineupEngine.overspendCap({
+      marketValue: market, safeMax: safe, winnerPct: w ? w.pct : 0,
+    });
+    // A stretch is only justified while the rest of the lineup stays
+    // competitive — except for genuine cornerstones, who earn a little more.
+    const elite = w && w.pct >= 0.75;
+    const ceilingForStretch = elite ? safe : Math.min(safe, Math.max(competitive, market));
+    const suggested = Math.max(1, Math.min(ceilingForStretch, cap.suggested));
+    return { market, safe, competitive, suggested, premium: cap.premium, winner: w };
+  }
+
+  // ---------------------------------------------------------------------------
   // Draft actions
   // ---------------------------------------------------------------------------
   function applyPick(pid, teamIdx, price, syncKey) {
@@ -345,6 +553,7 @@
     renderParSheet();
     renderTeams();
     renderVegas();
+    renderWinners();
   }
 
   function renderTopStats() {
@@ -352,6 +561,13 @@
     $('#statBudget').textContent = `$${teamRemaining(me)}`;
     $('#statMaxBid').textContent = `$${teamMaxBid(me)}`;
     $('#statSpots').textContent = teamSpotsLeft(me);
+    const open = openStartingSlots(me);
+    const reserve = open.reduce((s, slot) => s + (lineupCtx().floors[slot] || 1), 0);
+    const st = $('#statStarters');
+    st.textContent = open.length;
+    st.title = open.length
+      ? `Unfilled: ${open.join(', ')} — about $${reserve} to fill them all with startable players`
+      : 'Starting lineup complete';
     $('#statInflation').textContent = `${inflation().toFixed(2)}×`;
     const h = hammerIndex();
     $('#statHammer').textContent = h >= 0 ? `${state.teams[h].name} ($${teamRemaining(h)})` : '—';
@@ -611,18 +827,36 @@
       if (slot) slot.pick = pick;
     }
 
-    el.innerHTML = slots.map((s) => `
-      <div class="roster-slot">
+    // Starting-lineup production: the only points that count.
+    let starterPts = 0, ptsKnown = 0;
+    const STARTING = 10;
+    slots.slice(0, STARTING).forEach((s) => {
+      if (!s.pick) return;
+      const w = winnerFor(s.pick.p);
+      if (w && w.proj !== null) { starterPts += w.proj; ptsKnown += 1; }
+    });
+
+    el.innerHTML = slots.map((s, i) => {
+      const bench = i >= STARTING;
+      const w = s.pick ? winnerFor(s.pick.p) : null;
+      const pts = w && w.proj !== null ? `<span class="slot-pts">${Math.round(w.proj)}</span>` : '<span class="slot-pts"></span>';
+      return `
+      <div class="roster-slot${bench ? ' benched' : ''}">
         <span class="slot-label">${s.pos === 'DST' ? 'D/ST' : s.pos}</span>
         ${s.pick
-          ? `<span>${s.pick.p.n} <span class="tm muted">${s.pick.p.tm}</span></span><span class="paid">$${s.pick.price}</span>`
-          : '<span class="empty">empty</span><span class="paid muted"></span>'}
-      </div>`).join('') +
+          ? `<span>${s.pick.p.n} <span class="tm muted">${s.pick.p.tm}</span></span>${pts}<span class="paid">$${s.pick.price}</span>`
+          : '<span class="empty">empty</span><span class="slot-pts"></span><span class="paid muted"></span>'}
+      </div>`;
+    }).join('') +
       `<div class="par-summary" style="margin-top:10px">
         <span>Spent <b>$${state.teams[me].spent}</b></span>
         <span>Left <b>$${teamRemaining(me)}</b></span>
         <span>Max bid <b>$${teamMaxBid(me)}</b></span>
-      </div>`;
+      </div>
+      ${ptsKnown ? `<div class="lineup-strength">
+        <span>Projected <b>starting</b> points</span><b>${Math.round(starterPts)}</b>
+        <div class="muted">From ${ptsKnown} of 10 starting slots. Bench production is excluded — it scores you nothing.</div>
+      </div>` : ''}`;
   }
 
   function renderParSheet() {
@@ -866,6 +1100,75 @@
     $$('#tab-vegas .vg-item').forEach((n) => n.addEventListener('click', () => openDraftModal(n.dataset.pid)));
   }
 
+  function renderWinners() {
+    const el = $('#tab-winners');
+    const me = state.settings.myTeam;
+    const open = openStartingSlots(me);
+    const ctx = lineupCtx();
+    const infl = ctx.infl;
+
+    const rows = undrafted()
+      .filter((p) => p.pos !== 'K' && p.pos !== 'DST')
+      .map((p) => ({ p, w: winnerFor(p), g: bidGuide(p), starter: fillsStarter(p) }))
+      .filter((x) => x.w && x.w.score > 0)
+      .sort((a, b) => b.w.score - a.w.score);
+
+    const needed = rows.filter((x) => x.starter).slice(0, 12);
+    const anyEstimated = rows.some((x) => x.w.estimated);
+
+    const pct = (n) => (n === null || n === undefined ? '—' : `${Math.round(n * 100)}%`);
+    const row = (x) => {
+      const bar = Math.round(x.w.pct * 100);
+      const cons = x.w.consistency;
+      const consCls = cons === null ? '' : cons >= 0.72 ? 'good' : cons >= 0.55 ? 'ok' : 'bad';
+      const tip = `${x.w.proj !== null ? `${Math.round(x.w.proj)} pts · ` : ''}`
+        + `${Math.round(x.w.pas)} above a starting ${x.p.pos}`
+        + `${cons !== null ? ` · ${pct(cons)} volume-based scoring` : ''}`
+        + `${x.w.availability !== null ? ` · ${pct(x.w.availability)} of the season` : ''}`;
+      return `<div class="win-item" data-pid="${x.p.id}" title="${tip}">
+        <span class="pos-chip pos-${x.p.pos}">${x.p.pos}</span>
+        <span class="fill">${x.p.n}${x.p.target ? ' <span class="star">⭐</span>' : ''}</span>
+        <span class="wbar"><i style="width:${bar}%"></i></span>
+        <span class="cons ${consCls}">${pct(cons)}</span>
+        <span class="paybox${x.g.suggested < x.g.market ? ' unaffordable' : ''}">
+          <b>$${x.g.suggested}</b><em>${x.g.suggested < x.g.market ? `costs ~$${x.g.market}` : `mkt $${x.g.market}`}</em>
+        </span>
+      </div>`;
+    };
+
+    const slotLine = open.length
+      ? open.map((s) => `<span class="need-chip">${s === 'DST' ? 'D/ST' : s} ~$${ctx.floors[s]}</span>`).join('')
+      : '<span class="muted">Starting lineup is full — everything left is bench.</span>';
+
+    el.innerHTML = `
+      <div class="panel-note">
+        <b>🏆 League winners — who to overspend on</b>
+        <div class="muted">Ranked by production <b>above a typical starter</b> at the position, then
+        discounted for weeks missed and boom-bust scoring. Bench points are worth zero, so only
+        players who'd walk into your lineup are listed.</div>
+      </div>
+      <div class="par-summary">
+        <span>Starters open <b>${open.length}</b></span>
+        <span>Budget <b>$${teamRemaining(me)}</b></span>
+        <span>Bench spots <b>${Math.max(0, teamSpotsLeft(me) - open.length)}</b></span>
+      </div>
+      <h4 class="vg-sec">🧱 Cost to fill your remaining starting slots</h4>
+      <div class="needs">${slotLine}</div>
+      <p class="muted">That reserve is what the <b>max</b> figure protects. Spend past it and one of
+      those slots goes unfilled.</p>
+      <div class="win-head"><span></span><span>Player</span><span>Winner</span><span>Steady</span><span>Pay to</span></div>
+      ${needed.map(row).join('') || '<div class="muted">No starters left to chase.</div>'}
+      ${anyEstimated ? '<p class="muted">⚠️ Some scores are estimated from your board values because no Vegas line covers that player — load lines for real consistency and availability numbers.</p>' : ''}
+      <p class="muted"><b>$X</b> is the most you're justified paying; <b>mkt</b> is what he'd
+      normally go for. The gap between them is your licensed overspend — deliberately small for
+      ordinary starters and large only for genuine cornerstones, and never past the point where the
+      rest of your lineup drops below market. Click a player for the full ceiling breakdown.</p>`;
+
+    $$('#tab-winners .win-item').forEach((n) =>
+      n.addEventListener('click', () => openDraftModal(n.dataset.pid)));
+    void infl;
+  }
+
   // ---------------------------------------------------------------------------
   // Vegas data loading
   // ---------------------------------------------------------------------------
@@ -1004,13 +1307,89 @@
     sel.innerHTML = state.teams.map((t, i) =>
       `<option value="${i}"${i === state.settings.myTeam ? ' selected' : ''}>${t.name} ($${teamRemaining(i)}, max $${teamMaxBid(i)})</option>`).join('');
     $('#draftPrice').value = Math.min(adjValue(p, infl), teamMaxBid(state.settings.myTeam)) || 1;
+    renderBidGuide(p);
     updateMaxHint();
     show('#modalDraft');
+  }
+
+  /** The overspend panel: market price, justified stretch, lineup-safe ceiling. */
+  function renderBidGuide(p) {
+    const el = $('#bidGuide');
+    const g = bidGuide(p);
+    const w = g.winner;
+    const starter = fillsStarter(p);
+    const open = openStartingSlots(state.settings.myTeam);
+    const pctTxt = (n) => (n === null || n === undefined ? '—' : `${Math.round(n * 100)}%`);
+
+    const tier = g.safe < g.market
+      ? { cls: 'broke', txt: `⛔ Out of reach — he goes for about $${g.market}, your ceiling is $${g.safe}` }
+      : w && w.pct >= 0.75 ? { cls: 'elite', txt: '🏆 League winner — worth stretching for' }
+      : w && w.pct >= 0.45 ? { cls: 'solid', txt: '✅ Quality starter' }
+      : starter ? { cls: 'ok', txt: 'Fills a starting slot' }
+      : { cls: 'bench', txt: '🪑 Bench body — bench points score you nothing' };
+
+    el.innerHTML = `
+      <div class="bg-tier ${tier.cls}">${tier.txt}</div>
+      <div class="bg-nums">
+        <div><label>Market</label><b>$${g.market}</b></div>
+        <div class="bg-go"><label>Pay up to</label><b>$${g.suggested}</b></div>
+        <div><label>Hard ceiling</label><b>$${g.safe}</b></div>
+      </div>
+      <div class="bg-meta muted">
+        ${starter ? `Steps into your <b>${open.includes(p.pos) ? p.pos : 'FLEX'}</b> slot` : 'Would sit on your bench'}
+        ${w && w.consistency !== null ? ` · ${pctTxt(w.consistency)} of his points are volume-based` : ''}
+        ${w && w.availability !== null ? ` · books expect ${Math.round((w.availability) * 17)} games` : ''}
+        ${w ? ` · ${Math.round(w.pas)} pts above a starting ${p.pos}` : ''}
+      </div>`;
+    checkBidWarning();
+  }
+
+  /** Live feedback as the price is typed. */
+  function checkBidWarning() {
+    const p = playerById(currentPid);
+    const warn = $('#bidWarn');
+    if (!p) return;
+    const teamIdx = Number($('#draftTeamSelect').value);
+    const price = Math.max(1, Math.round(Number($('#draftPrice').value) || 1));
+    if (teamIdx !== state.settings.myTeam) { warn.classList.add('hidden'); return; }
+
+    const g = bidGuide(p);
+    const spots = teamSpotsLeft(teamIdx);
+    const open = openStartingSlots(teamIdx);
+    const startersAfter = open.length - (fillsStarter(p) ? 1 : 0);
+    const left = teamRemaining(teamIdx) - price;
+    const benchAfter = Math.max(0, (spots - 1) - startersAfter);
+    const perStarter = startersAfter > 0
+      ? Math.floor((left - benchAfter) / startersAfter)
+      : null;
+
+    // Always show what this bid actually leaves behind — that's the real answer
+    // to "am I jeopardizing the team".
+    const after = startersAfter > 0
+      ? `At $${price}: <b>$${left}</b> left for <b>${startersAfter}</b> more starting slots
+         (≈$${Math.max(0, perStarter)} each) plus ${benchAfter} bench.`
+      : `At $${price}: <b>$${left}</b> left, starting lineup complete.`;
+
+    if (price > g.safe) {
+      warn.className = 'bid-warn danger';
+      warn.innerHTML = `🚨 <b>$${price} breaks your lineup.</b> ${after} That isn't enough to put a
+        startable player in every slot. Hard ceiling is <b>$${g.safe}</b>.`;
+    } else if (price > g.suggested) {
+      warn.className = 'bid-warn caution';
+      warn.innerHTML = `⚠️ Past the justified stretch of <b>$${g.suggested}</b> — the rest of your
+        lineup drops below market from here. ${after} Survivable up to $${g.safe}, but only for a
+        player you've decided you must own.`;
+    } else {
+      warn.className = 'bid-warn ok';
+      warn.innerHTML = after;
+    }
+    warn.classList.remove('hidden');
   }
 
   function updateMaxHint() {
     const i = Number($('#draftTeamSelect').value);
     $('#draftMaxHint').textContent = `Max bid for ${state.teams[i].name}: $${teamMaxBid(i)} (must leave $1 per open spot)`;
+    checkBidWarning();
   }
 
   function confirmDraft() {
@@ -1262,6 +1641,7 @@
     // draft modal
     $('#btnConfirmDraft').addEventListener('click', confirmDraft);
     $('#draftTeamSelect').addEventListener('change', updateMaxHint);
+    $('#draftPrice').addEventListener('input', checkBidWarning);
     $('#btnEditPlayer').addEventListener('click', openEditModal);
     $('#btnSaveEdit').addEventListener('click', saveEdit);
     $('#btnUndo').addEventListener('click', () => {

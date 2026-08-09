@@ -269,7 +269,7 @@ body {
 
 /* ---------- Strategy by Faraz ---------- */
 .veg.strong { text-shadow: 0 0 8px currentColor; }
-.faraz-head {
+.faraz-head, .panel-note {
   background: var(--panel-2); border: 1px solid var(--border); border-left: 3px solid var(--accent);
   border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; font-size: 12px;
 }
@@ -285,3 +285,52 @@ body {
 .vg-item .arank { color: var(--warn); }
 .vg-item .vrank { color: var(--accent-2); }
 .shaky { color: var(--warn); font-weight: 700; }
+
+/* ---------- league winners / bid guide ---------- */
+.win-head, .win-item {
+  display: grid; grid-template-columns: 28px 1fr 54px 40px 66px; gap: 5px;
+  align-items: center; padding: 4px 5px; border-radius: 6px; font-size: 12px;
+}
+.win-head { color: var(--muted); font-size: 10px; text-transform: uppercase; }
+.win-item { cursor: pointer; }
+.win-item:hover { background: var(--panel-2); }
+.win-item .fill { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wbar { height: 7px; background: #26303f; border-radius: 4px; overflow: hidden; }
+.wbar i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent-2), var(--accent)); }
+.win-item .cons { text-align: right; font-variant-numeric: tabular-nums; }
+.cons.good { color: var(--accent); } .cons.ok { color: var(--warn); } .cons.bad { color: var(--danger); }
+.paybox { text-align: right; line-height: 1.15; }
+.paybox b { color: var(--accent); font-variant-numeric: tabular-nums; }
+.paybox em { display: block; font-style: normal; font-size: 10px; color: var(--muted); }
+
+.bid-guide { margin: 10px 0; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.bg-tier { padding: 5px 10px; font-size: 12px; font-weight: 600; }
+.bg-tier.elite { background: #2a2410; color: var(--gold); }
+.bg-tier.solid { background: #14301f; color: var(--accent); }
+.bg-tier.ok { background: var(--panel-2); color: var(--text); }
+.bg-tier.bench { background: #2b2230; color: #c9a7d8; }
+.bg-nums { display: grid; grid-template-columns: repeat(3, 1fr); background: var(--panel-2); }
+.bg-nums div { padding: 7px 10px; text-align: center; border-right: 1px solid var(--border); }
+.bg-nums div:last-child { border-right: none; }
+.bg-nums label { display: block; font-size: 10px; text-transform: uppercase; color: var(--muted); }
+.bg-nums b { font-size: 17px; font-variant-numeric: tabular-nums; }
+.bg-nums .bg-go b { color: var(--accent); }
+.bg-meta { padding: 6px 10px; font-size: 11px; }
+
+.bid-warn { margin-top: 8px; padding: 8px 10px; border-radius: 8px; font-size: 12px; }
+.bid-warn.danger { background: #3a1d1d; border: 1px solid var(--danger); color: #ffc9c9; }
+.bid-warn.caution { background: #3a3018; border: 1px solid var(--warn); color: #ffe0b3; }
+
+.roster-slot { grid-template-columns: 44px 1fr 34px 46px; }
+.roster-slot.benched { opacity: .55; }
+.slot-pts { text-align: right; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.lineup-strength {
+  margin-top: 8px; padding: 8px 10px; border-radius: 8px;
+  background: var(--panel-2); border-left: 3px solid var(--accent); font-size: 12px;
+}
+.lineup-strength b { float: right; font-size: 16px; color: var(--accent); }
+.lineup-strength .muted { clear: both; display: block; margin-top: 4px; font-size: 11px; }
+.bid-warn.ok { background: var(--panel-2); border: 1px solid var(--border); color: var(--muted); }
+.paybox.unaffordable b { color: var(--muted); text-decoration: line-through; }
+.paybox.unaffordable em { color: var(--danger); }
+.bg-tier.broke { background: #3a1d1d; color: #ffc9c9; }

@@ -490,6 +490,7 @@ window.VegasEngine = (function () {
     BOOK_PRIORITY,
     projectPoints,
     priceProjections,
+    replacementLevel,
     draftedCounts,
     normName,
     parseCsv,

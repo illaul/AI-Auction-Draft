@@ -17,6 +17,52 @@ in-draft tooling.
 | **Room inflation** | Live inflation multiplier (remaining money ÷ remaining sheet value) and inflation-adjusted prices next to your sheet values |
 | **Coach bar** | Context-aware strategy tips (sitting-down bonus, mid-draft aggression, 1-QB value guarantee, max-bid rule, don't price-enforce…) that change as the draft progresses |
 | **Vegas edge — Strategy by Faraz** | Rank divergence between the sportsbooks and the fantasy analysts: buy where Vegas ranks a player well above the analyst consensus, fade the reverse |
+| **League winners & overspend ceiling** | Who's worth breaking your budget for, how far over market you're justified going, and the hard limit past which your starting lineup can't be filled — bench production excluded throughout |
+
+## League winners & the overspend ceiling
+
+**Points scored on your bench are worth zero.** Every dollar should buy production that actually
+appears in your lineup, so the Winners tab measures players against a **typical starter** at their
+position — not against a bench body — and then discounts for the two things that keep production
+out of your lineup:
+
+- **Availability** — the share of the season the books expect him to play.
+- **Consistency** — read straight out of the prop composition. Yards and receptions recur every
+  week; touchdowns are lumpy binary events. A back whose value is mostly goal-line scores has a far
+  shakier floor than one with the same projection built on volume. The `Steady` column is the share
+  of his projected points that come from volume rather than scores.
+
+A player both the books and the analysts rank elite, who plays every week and scores steadily, is
+the one worth breaking your budget for. (Divergence plays from the Faraz board are cheap upside;
+these are cornerstones — different jobs.)
+
+### The three numbers on every bid
+
+Click any player and the draft dialog shows:
+
+| | Meaning |
+| --- | --- |
+| **Market** | What he'd normally go for, inflation-adjusted |
+| **Pay up to** | The most you're *justified* paying. Market plus a premium that scales with how much of a league winner he is — small for ordinary starters, up to about +38% for genuine cornerstones — and never past the point where the rest of your lineup drops below market |
+| **Hard ceiling** | Cross this and you **cannot** fill your remaining starting slots with startable players. Not a guideline |
+
+As you type a price the dialog tells you exactly what that bid leaves behind — *"At $86: $114 left
+for 9 more starting slots (≈$12 each) plus 6 bench"* — then turns amber past the justified stretch
+and red past the hard ceiling. If a player's market price is already above your ceiling he's marked
+**out of reach** rather than given a bid number.
+
+### How the ceiling is computed
+
+At any moment the app knows which starting slots you still have open and what a startable player at
+each of those slots currently costs, given how many teams are still competing for one. Slots share
+players — every open FLEX also chases the RB/WR/TE pool — so demand for a position counts its own
+openings plus its share of the flexes. Your ceiling is your budget minus that reserve, minus $1 per
+bench spot. It tightens automatically every time a pick lands.
+
+The **Starters Left** stat in the header shows how many starting slots you still need (hover for
+the total reserve), and **My Team** reports your projected **starting** points — bench excluded.
+The par sheet includes a **Starters First** build that puts every bench slot at $1 and the whole
+budget into the ten slots that play.
 
 ## Strategy by Faraz — Vegas vs. analyst rank divergence
 

@@ -275,6 +275,13 @@ const PAR_BUILDS = {
     ['FLX', 9], ['TE', 8], ['K', 1], ['DST', 1],
     ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1],
   ],
+  // Bench points score you nothing — every bench slot is a $1 lottery ticket
+  // and the whole budget goes into the ten slots that actually play.
+  'Starters First': [
+    ['RB', 50], ['RB', 34], ['WR', 44], ['WR', 32], ['FLX', 22], ['FLX', 16],
+    ['TE', 14], ['QB', 10], ['K', 1], ['DST', 1],
+    ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1],
+  ],
   'Balanced': [
     ['RB', 40], ['RB', 28], ['WR', 34], ['WR', 26], ['FLX', 18], ['FLX', 14],
     ['TE', 12], ['QB', 14], ['K', 1], ['DST', 1],

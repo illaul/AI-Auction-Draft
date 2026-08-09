@@ -13,6 +13,7 @@
     <div id="topStats" class="top-stats">
       <div class="stat"><label>My Budget</label><b id="statBudget">$200</b></div>
       <div class="stat"><label>Max Bid</label><b id="statMaxBid">$185</b></div>
+      <div class="stat"><label>Starters Left</label><b id="statStarters">10</b></div>
       <div class="stat"><label>Spots Left</label><b id="statSpots">16</b></div>
       <div class="stat"><label>Inflation</label><b id="statInflation">1.00×</b></div>
       <div class="stat hammer-stat"><label>The Hammer</label><b id="statHammer">—</b></div>
@@ -66,11 +67,13 @@
         <button data-tab="parsheet">Par Sheet</button>
         <button data-tab="teams">League</button>
         <button data-tab="vegas">Vegas</button>
+        <button data-tab="winners">Winners</button>
       </div>
       <div id="tab-myteam" class="tab-body"></div>
       <div id="tab-parsheet" class="tab-body hidden"></div>
       <div id="tab-teams" class="tab-body hidden"></div>
       <div id="tab-vegas" class="tab-body hidden"></div>
+      <div id="tab-winners" class="tab-body hidden"></div>
     </section>
   </main>
 
@@ -83,11 +86,13 @@
         <label>Winning team</label>
         <select id="draftTeamSelect"></select>
       </div>
+      <div id="bidGuide" class="bid-guide"></div>
       <div class="form-row">
         <label>Price ($)</label>
         <input id="draftPrice" type="number" min="1" value="1" />
         <span id="draftMaxHint" class="muted"></span>
       </div>
+      <div id="bidWarn" class="bid-warn hidden"></div>
       <div class="modal-actions">
         <button class="btn btn-ghost" data-close>Cancel</button>
         <button id="btnEditPlayer" class="btn btn-ghost">Edit Value/Tier</button>
@@ -247,6 +252,7 @@
 
   <script src="js/data.js"></script>
   <script src="js/vegas.js"></script>
+  <script src="js/lineup.js"></script>
   <script src="js/sleeper.js"></script>
   <script src="js/espn.js"></script>
   <script src="js/app.js"></script>
