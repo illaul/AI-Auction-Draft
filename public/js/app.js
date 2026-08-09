@@ -42,6 +42,22 @@
       parSlots: PAR_BUILDS['Hero RB'].map((s) => s.slice()),
       conn: { type: 'manual' },
       syncedKeys: [],
+      vegas: freshVegas(),
+    };
+  }
+
+  function freshVegas() {
+    return {
+      source: 'sample',     // 'sample' | 'odds-api' | 'import'
+      asOf: 'bundled sample data',
+      allowSample: false,   // must opt in before sample edges show on the board
+      scoring: 'ppr',
+      compare: 'pos',       // 'pos' = edges within a position | 'global' = across all
+      blend: 0,             // % weight of Vegas dollars blended into your values
+      lines: null,          // null => use the bundled sample
+      winTotals: null,
+      meta: null,
+      stamp: 0,
     };
   }
 
@@ -49,7 +65,11 @@
   function load() {
     try {
       const raw = localStorage.getItem(STORE_KEY);
-      if (raw) { state = JSON.parse(raw); return; }
+      if (raw) {
+        state = JSON.parse(raw);
+        if (!state.vegas) state.vegas = freshVegas(); // saved before Vegas existed
+        return;
+      }
     } catch (_) { /* fall through */ }
     state = freshState();
   }
@@ -72,18 +92,64 @@
     return best;
   }
 
+  // ---- Vegas ---------------------------------------------------------------
+  const activeLines = () => state.vegas.lines || VegasEngine.SAMPLE_LINES;
+  const activeWinTotals = () => state.vegas.winTotals || VegasEngine.SAMPLE_WIN_TOTALS;
+  /** Sample data stays off the board until the user explicitly opts in. */
+  const vegasActive = () => state.vegas.source !== 'sample' || state.vegas.allowSample;
+
+  let vegasCache = null;
+
+  function vegasMap() {
+    const v = state.vegas;
+    const key = [v.source, v.scoring, v.stamp, v.compare, state.settings.teams,
+      state.settings.budget, state.settings.rosterSize, state.players.length].join('|');
+    if (vegasCache && vegasCache.key === key) return vegasCache.map;
+
+    const lines = activeLines();
+    const rows = [];
+    for (const p of state.players) {
+      if (p.pos === 'K' || p.pos === 'DST' || !p.pos) continue;
+      const line = lines[VegasEngine.normName(p.n)];
+      if (!line) continue;
+      rows.push({ id: p.id, pos: p.pos, mine: p.v, proj: VegasEngine.projectPoints(line, v.scoring) });
+    }
+    const priced = VegasEngine.priceProjections(rows, { ...state.settings, compare: v.compare || 'pos' });
+    const map = new Map();
+    for (const [id, x] of priced) {
+      const p = playerById(id);
+      map.set(id, { ...x, edge: x.val - (p ? p.v : 0) });
+    }
+    vegasCache = { key, map };
+    return map;
+  }
+
+  const vegasFor = (p) => (vegasActive() ? vegasMap().get(p.id) || null : null);
+
+  /**
+   * The dollar figure the app prices against. Equals your own value unless you
+   * dial in a Vegas blend, in which case it's a weighted mix of the two.
+   */
+  function sheetValue(p) {
+    const w = (state.vegas.blend || 0) / 100;
+    if (!w) return p.v;
+    const vg = vegasFor(p);
+    if (!vg) return p.v;
+    return Math.max(1, Math.round(p.v * (1 - w) + vg.val * w));
+  }
+
   /** Room inflation: remaining league money vs. sheet value of draftable remainder. */
   function inflation() {
     let moneyLeft = 0, spotsLeft = 0;
     state.teams.forEach((_, i) => { moneyLeft += teamRemaining(i); spotsLeft += teamSpotsLeft(i); });
     if (spotsLeft <= 0) return 1;
-    const pool = undrafted().slice().sort((a, b) => b.v - a.v).slice(0, spotsLeft);
-    const poolValue = pool.reduce((s, p) => s + Math.max(p.v, 1), 0);
+    const pool = undrafted().slice().sort((a, b) => sheetValue(b) - sheetValue(a)).slice(0, spotsLeft);
+    const poolValue = pool.reduce((s, p) => s + Math.max(sheetValue(p), 1), 0);
     if (poolValue <= 0) return 1;
     return moneyLeft / poolValue;
   }
 
-  const adjValue = (p, infl) => Math.max(1, Math.round(p.v * infl));
+  const adjValue = (p, infl) => Math.max(1, Math.round(sheetValue(p) * infl));
 
   /** Positions a team still needs to fill among its starters. */
   function teamNeeds(i) {
@@ -193,6 +259,7 @@
     renderMyTeam();
     renderParSheet();
     renderTeams();
+    renderVegas();
   }
 
   function renderTopStats() {
@@ -236,6 +303,18 @@
     // 1-QB guarantee reminder while I still need a QB
     if (myNeeds.includes('QB') && progress > 0.2 && mySpots > 3) tips.push({ t: STRATEGY_TIPS.qbGuarantee });
 
+    // biggest Vegas disagreement at a position I still need
+    if (vegasActive() && mySpots > 2) {
+      const bull = undrafted()
+        .map((p) => ({ p, vg: vegasFor(p) }))
+        .filter((x) => x.vg && x.vg.edge >= 6
+          && (myNeeds.includes(x.p.pos) || (FLEX_POS.includes(x.p.pos) && myNeeds.includes('FLX'))))
+        .sort((a, b) => b.vg.edge - a.vg.edge)[0];
+      if (bull) {
+        tips.push({ t: `📈 Vegas edge: the books' props imply ${bull.p.n} is worth $${bull.vg.val} — $${bull.vg.edge} above your sheet. Bid up to the Vegas number, not yours.` });
+      }
+    }
+
     // rotate one general tip
     const generals = [STRATEGY_TIPS.tierAttack, STRATEGY_TIPS.nominationMix, STRATEGY_TIPS.priceEnforcer,
       STRATEGY_TIPS.onesie, STRATEGY_TIPS.valuesTrap, STRATEGY_TIPS.twoCurrencies, STRATEGY_TIPS.maxBidRead];
@@ -258,7 +337,7 @@
     if (boardFilter.hideDrafted) players = players.filter((p) => p.draftedBy === null);
 
     // group by pos (when filtered to one pos) or overall value order
-    players.sort((a, b) => b.v - a.v || a.n.localeCompare(b.n));
+    players.sort((a, b) => sheetValue(b) - sheetValue(a) || a.n.localeCompare(b.n));
 
     const groups = new Map();
     for (const p of players) {
@@ -281,11 +360,17 @@
       const rows = g.list.map((p) => {
         const drafted = p.draftedBy !== null;
         const adj = adjValue(p, infl);
+        const vg = vegasFor(p);
+        const veg = !vg || drafted ? ''
+          : vg.edge >= 3 ? `<span class="veg up" title="Vegas values him at $${vg.val} (${Math.round(vg.proj)} pts)">▲$${vg.edge}</span>`
+          : vg.edge <= -3 ? `<span class="veg down" title="Vegas values him at $${vg.val} (${Math.round(vg.proj)} pts)">▼$${Math.abs(vg.edge)}</span>`
+          : `<span class="veg flat" title="Vegas values him at $${vg.val} (${Math.round(vg.proj)} pts)">≈</span>`;
         return `<div class="p-row${drafted ? ' drafted' : ''}" data-pid="${p.id}">
           <span class="pos-chip pos-${p.pos}">${p.pos === 'DST' ? 'D' : p.pos}</span>
           <span class="p-name">${p.target ? '<span class="star">⭐</span> ' : ''}${p.n}<span class="tm">${p.tm}</span></span>
-          <span class="p-val">$${p.v}</span>
+          <span class="p-val">$${sheetValue(p)}</span>
           <span class="p-adj">${drafted ? '' : `$${adj}`}</span>
+          <span class="p-veg">${veg}</span>
           <span class="p-paid">${drafted ? `$${p.price} · ${state.teams[p.draftedBy].name}` : ''}</span>
         </div>`;
       }).join('');
@@ -327,6 +412,27 @@
     protect.sort((a, b) => b.p.v - a.p.v);
     if (protect.length && mySpots > 3) {
       groups.push(`<div class="nom-group"><h4>🎯 Attack a tier with depth (you need these)</h4>${protect.slice(0, 4).map((x) => item(x.p, x.why)).join('')}</div>`);
+    }
+
+    // 2b. Vegas edge: books imply more usage than your sheet says he's worth
+    if (vegasActive()) {
+      const needsPos = (pos) => myNeeds.includes(pos) || (FLEX_POS.includes(pos) && myNeeds.includes('FLX'));
+      const bulls = undrafted()
+        .map((p) => ({ p, vg: vegasFor(p) }))
+        .filter((x) => x.vg && x.vg.edge >= 4 && needsPos(x.p.pos))
+        .sort((a, b) => b.vg.edge - a.vg.edge)
+        .slice(0, 4);
+      if (bulls.length && mySpots > 2) {
+        groups.push(`<div class="nom-group vegas"><h4>📈 Vegas is high on these (you need them)</h4>${bulls.map((x) => item(x.p, `books say $${x.vg.val} · +$${x.vg.edge}`)).join('')}</div>`);
+      }
+      const fades = undrafted()
+        .map((p) => ({ p, vg: vegasFor(p) }))
+        .filter((x) => x.vg && x.vg.edge <= -6 && !needsPos(x.p.pos) && x.p.v >= 12)
+        .sort((a, b) => a.vg.edge - b.vg.edge)
+        .slice(0, 3);
+      if (fades.length && mySpots > 2) {
+        groups.push(`<div class="nom-group drain"><h4>📉 Vegas fades — nominate, let someone else pay</h4>${fades.map((x) => item(x.p, `books say only $${x.vg.val}`)).join('')}</div>`);
+      }
     }
 
     // 3. Money drains: last-in-tier or expensive players at positions I've filled
@@ -377,7 +483,7 @@
       const p = playerById(entry.pid);
       if (!p) return '';
       const n = state.log.length - ri;
-      const diff = entry.price - p.v;
+      const diff = entry.price - sheetValue(p);
       const cls = diff <= -4 ? ' steal' : diff >= 5 ? ' overpay' : '';
       const mine = entry.team === state.settings.myTeam ? ' mine' : '';
       return `<div class="log-row${cls}${mine}">
@@ -506,6 +612,197 @@
         <div class="needs">${needs.map((n) => `<span class="need-chip">${n}</span>`).join('') || '<span class="need-chip">starters full</span>'}</div>
       </div>`;
     }).join('');
+  }
+
+  function renderVegas() {
+    const el = $('#tab-vegas');
+    const v = state.vegas;
+    const sample = v.source === 'sample';
+    const lineCount = Object.keys(activeLines()).length;
+
+    const banner = sample
+      ? `<div class="vg-banner ${v.allowSample ? 'warn' : 'stop'}">
+           <b>⚠️ Sample data — these are NOT real sportsbook lines.</b>
+           <div class="muted">They exist so you can see how the tool works. Fetch or import real
+           lines before draft day.</div>
+           ${v.allowSample
+             ? '<button id="btnVgDisallow" class="btn btn-sm btn-ghost">Hide sample edges</button>'
+             : '<button id="btnVgAllow" class="btn btn-sm btn-ghost">Show sample edges anyway</button>'}
+         </div>`
+      : `<div class="vg-banner ok"><b>✓ ${v.source === 'odds-api' ? 'Live Odds API lines' : 'Imported lines'}</b>
+           <div class="muted">${lineCount} players · ${v.asOf}${v.meta?.events ? ` · ${v.meta.events} games sampled` : ''}</div></div>`;
+
+    const controls = `
+      <div class="vg-controls">
+        <button id="btnVgOpen" class="btn btn-sm">Fetch / import lines</button>
+      </div>
+      <div class="vg-row">
+        <label>Scoring</label>
+        <select id="vgScoring">
+          <option value="ppr"${v.scoring === 'ppr' ? ' selected' : ''}>Full PPR</option>
+          <option value="half"${v.scoring === 'half' ? ' selected' : ''}>Half PPR</option>
+          <option value="std"${v.scoring === 'std' ? ' selected' : ''}>Standard</option>
+        </select>
+      </div>
+      <div class="vg-row">
+        <label>Compare</label>
+        <select id="vgCompare">
+          <option value="pos"${(v.compare || 'pos') === 'pos' ? ' selected' : ''}>Within position</option>
+          <option value="global"${v.compare === 'global' ? ' selected' : ''}>Across all positions</option>
+        </select>
+      </div>
+      <div class="vg-row">
+        <label>Blend into my values <b>${v.blend}%</b></label>
+        <input id="vgBlend" type="range" min="0" max="100" step="5" value="${v.blend}" />
+      </div>
+      <p class="muted">At 0% your own numbers drive every price and Vegas is pure signal. Dial it up
+      to let the books move your sheet — 25–40% is a sane range.</p>`;
+
+    let body = '';
+    if (!vegasActive()) {
+      body = '<div class="log-empty">Vegas edges are hidden until real lines are loaded.</div>';
+    } else {
+      const rated = state.players
+        .filter((p) => p.draftedBy === null)
+        .map((p) => ({ p, vg: vegasFor(p) }))
+        .filter((x) => x.vg);
+      const bulls = rated.slice().sort((a, b) => b.vg.edge - a.vg.edge).filter((x) => x.vg.edge > 0).slice(0, 10);
+      const fades = rated.slice().sort((a, b) => a.vg.edge - b.vg.edge).filter((x) => x.vg.edge < 0).slice(0, 8);
+
+      const row = (x) => `<div class="vg-item" data-pid="${x.p.id}">
+          <span class="pos-chip pos-${x.p.pos}">${x.p.pos}</span>
+          <span class="fill">${x.p.n}</span>
+          <span class="muted">${Math.round(x.vg.proj)} pts</span>
+          <span class="mine">$${x.p.v}</span>
+          <span class="theirs">$${x.vg.val}</span>
+          <span class="edge ${x.vg.edge > 0 ? 'up' : 'down'}">${x.vg.edge > 0 ? '+' : ''}${x.vg.edge}</span>
+        </div>`;
+
+      // Coverage matters: thin position groups make replacement level optimistic.
+      const cov = {};
+      for (const p of state.players) {
+        if (p.pos === 'K' || p.pos === 'DST') continue;
+        cov[p.pos] = cov[p.pos] || { have: 0, total: 0 };
+        cov[p.pos].total += 1;
+        if (activeLines()[VegasEngine.normName(p.n)]) cov[p.pos].have += 1;
+      }
+      const covChips = Object.entries(cov).map(([pos, c]) =>
+        `<span class="need-chip${c.have < 8 ? ' thin' : ''}">${pos} ${c.have}/${c.total}</span>`).join('');
+      const thin = Object.values(cov).some((c) => c.have > 0 && c.have < 8);
+
+      const wins = activeWinTotals();
+      const winChips = Object.entries(wins).sort((a, b) => b[1] - a[1]).slice(0, 12)
+        .map(([t, w]) => `<span class="need-chip">${t} ${w}</span>`).join('');
+
+      body = `
+        <div class="vg-head"><span></span><span>Player</span><span>Proj</span><span>Mine</span><span>Vegas</span><span>Edge</span></div>
+        <h4 class="vg-sec up">📈 Books are higher than you — buy</h4>
+        ${bulls.map(row).join('') || '<div class="muted">No positive edges left.</div>'}
+        <h4 class="vg-sec down">📉 Books are lower — fade or let the room pay</h4>
+        ${fades.map(row).join('') || '<div class="muted">No negative edges left.</div>'}
+        <h4 class="vg-sec">🏆 Team win totals</h4>
+        <div class="needs">${winChips || '<span class="muted">None loaded.</span>'}</div>
+        <h4 class="vg-sec">📋 Line coverage</h4>
+        <div class="needs">${covChips}</div>
+        <p class="muted">Vegas dollars redistribute the money you already assign to covered players,
+        so edges stay meaningful at any coverage level.
+        ${(state.vegas.compare || 'pos') === 'pos'
+          ? 'Edges compare a player to others at <b>his own position</b> — deciding RB vs. WR is your tiers\' job, not the books\'.'
+          : '<b>Across-positions mode</b> only holds up when every position has deep coverage; thin groups will bias a whole position one way.'}
+        ${thin ? ' Groups under 8 players make replacement level optimistic — treat those edges as rough.' : ''}</p>`;
+    }
+
+    el.innerHTML = banner + controls + body;
+
+    const bind = (sel, ev, fn) => { const n = $(sel); if (n) n.addEventListener(ev, fn); };
+    bind('#btnVgAllow', 'click', () => { state.vegas.allowSample = true; save(); renderAll(); });
+    bind('#btnVgDisallow', 'click', () => { state.vegas.allowSample = false; save(); renderAll(); });
+    bind('#btnVgOpen', 'click', () => { $('#vegasMsg').classList.add('hidden'); show('#modalVegas'); });
+    bind('#vgScoring', 'change', (e) => { state.vegas.scoring = e.target.value; save(); renderAll(); });
+    bind('#vgCompare', 'change', (e) => { state.vegas.compare = e.target.value; save(); renderAll(); });
+    bind('#vgBlend', 'change', (e) => { state.vegas.blend = Number(e.target.value); save(); renderAll(); });
+    $$('#tab-vegas .vg-item').forEach((n) => n.addEventListener('click', () => openDraftModal(n.dataset.pid)));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Vegas data loading
+  // ---------------------------------------------------------------------------
+  function vegasMsg(text, isError) {
+    const el = $('#vegasMsg');
+    el.textContent = text;
+    el.style.color = isError ? '' : 'var(--accent)';
+    el.classList.remove('hidden');
+  }
+
+  async function vegasTestKey() {
+    const key = $('#vgKey').value.trim();
+    if (!key) return vegasMsg('Enter your Odds API key first.', true);
+    try {
+      const r = await fetch(`/api/odds/status?key=${encodeURIComponent(key)}`);
+      const b = await r.json();
+      if (!r.ok) return vegasMsg(b.error, true);
+      vegasMsg(`Key works — ${b.creditsRemaining ?? '?'} API credits remaining.`, false);
+    } catch (err) {
+      vegasMsg(String(err.message || err), true);
+    }
+  }
+
+  async function vegasFetch() {
+    const key = $('#vgKey').value.trim();
+    if (!key) return vegasMsg('Enter your Odds API key first.', true);
+    const expectedGames = Number($('#vgGames').value) || 16.2;
+    const maxEvents = Number($('#vgMaxEvents').value) || 16;
+    const btn = $('#btnVgFetch');
+    btn.textContent = 'Fetching…';
+    try {
+      const r = await fetch(`/api/odds/props?key=${encodeURIComponent(key)}&maxEvents=${maxEvents}`);
+      const b = await r.json();
+      if (!r.ok) return vegasMsg(b.error, true);
+      const perGame = {};
+      for (const [name, p] of Object.entries(b.players || {})) {
+        perGame[VegasEngine.normName(name)] = { ...p, name };
+      }
+      const count = Object.keys(perGame).length;
+      if (!count) {
+        return vegasMsg('The Odds API returned no player props — books may not have posted them yet for the next slate.', true);
+      }
+      state.vegas.lines = VegasEngine.extrapolateWeekProps(perGame, expectedGames);
+      state.vegas.source = 'odds-api';
+      state.vegas.asOf = `fetched ${new Date().toLocaleString()}`;
+      state.vegas.meta = b.meta;
+      state.vegas.stamp = Date.now();
+      save();
+      hide('#modalVegas');
+      renderAll();
+    } catch (err) {
+      vegasMsg(String(err.message || err), true);
+    } finally {
+      btn.textContent = 'Fetch lines';
+    }
+  }
+
+  function vegasImport() {
+    const csv = $('#vgCsv').value.trim();
+    if (!csv) return vegasMsg('Paste some player lines first.', true);
+    const { lines, errors } = VegasEngine.parseCsv(csv);
+    const count = Object.keys(lines).length;
+    if (!count) return vegasMsg(errors[0] || 'No usable rows found.', true);
+    state.vegas.lines = lines;
+    state.vegas.source = 'import';
+    state.vegas.asOf = `imported ${new Date().toLocaleDateString()}`;
+    state.vegas.meta = null;
+    state.vegas.stamp = Date.now();
+    const wins = $('#vgWins').value.trim();
+    if (wins) state.vegas.winTotals = VegasEngine.parseWinTotals(wins);
+    save();
+
+    // How many of these actually matched a player on the board?
+    const matched = state.players.filter((p) => lines[VegasEngine.normName(p.n)]).length;
+    hide('#modalVegas');
+    renderAll();
+    if (matched < count) {
+      alert(`Imported ${count} lines — ${matched} matched players on your board. Unmatched names are ignored; check spelling if that number looks low.`);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -798,9 +1095,20 @@
     $$('#connTabs button').forEach((b) => b.addEventListener('click', () => {
       $$('#connTabs button').forEach((x) => x.classList.remove('active'));
       b.classList.add('active');
-      $$('.ctab-body').forEach((x) => x.classList.add('hidden'));
+      $$('#modalConnect .ctab-body').forEach((x) => x.classList.add('hidden'));
       show(`#ctab-${b.dataset.ctab}`);
     }));
+    // vegas modal
+    $$('#vegTabs button').forEach((b) => b.addEventListener('click', () => {
+      $$('#vegTabs button').forEach((x) => x.classList.remove('active'));
+      b.classList.add('active');
+      $$('#modalVegas .ctab-body').forEach((x) => x.classList.add('hidden'));
+      show(`#vtab-${b.dataset.vtab}`);
+    }));
+    $('#btnVgTest').addEventListener('click', vegasTestKey);
+    $('#btnVgFetch').addEventListener('click', vegasFetch);
+    $('#btnVgImport').addEventListener('click', vegasImport);
+
     $('#btnSlFind').addEventListener('click', findSleeperDrafts);
     $('#btnSlConnect').addEventListener('click', connectSleeper);
     $('#btnEsConnect').addEventListener('click', connectEspn);

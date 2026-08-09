@@ -65,10 +65,12 @@
         <button data-tab="myteam" class="active">My Team</button>
         <button data-tab="parsheet">Par Sheet</button>
         <button data-tab="teams">League</button>
+        <button data-tab="vegas">Vegas</button>
       </div>
       <div id="tab-myteam" class="tab-body"></div>
       <div id="tab-parsheet" class="tab-body hidden"></div>
       <div id="tab-teams" class="tab-body hidden"></div>
+      <div id="tab-vegas" class="tab-body hidden"></div>
     </section>
   </main>
 
@@ -176,7 +178,58 @@
     </div>
   </div>
 
+  <!-- Vegas lines modal -->
+  <div id="modalVegas" class="modal hidden">
+    <div class="modal-card wide">
+      <h3>Vegas Lines</h3>
+      <div class="tabs" id="vegTabs">
+        <button data-vtab="fetch" class="active">Fetch live</button>
+        <button data-vtab="import">Import / paste</button>
+      </div>
+
+      <div id="vtab-fetch" class="ctab-body">
+        <p class="muted">Pulls consensus player props from <b>The Odds API</b> for the next NFL
+          slate and extrapolates them across a season. Get a free key at
+          the-odds-api.com — it stays on your machine.</p>
+        <div class="form-row"><label>Odds API key</label><input id="vgKey" placeholder="your api key" /></div>
+        <div class="form-row">
+          <label>Expected games played <span class="muted">(season extrapolation)</span></label>
+          <input id="vgGames" type="number" min="1" max="17" step="0.1" value="16.2" />
+        </div>
+        <div class="form-row">
+          <label>Games to sample <span class="muted">(each costs API credits)</span></label>
+          <input id="vgMaxEvents" type="number" min="1" max="20" value="16" />
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-ghost" data-close>Close</button>
+          <button id="btnVgTest" class="btn btn-sm">Test key</button>
+          <button id="btnVgFetch" class="btn btn-primary">Fetch lines</button>
+        </div>
+      </div>
+
+      <div id="vtab-import" class="ctab-body hidden">
+        <p class="muted">Paste season-long props as CSV/TSV with a header row. Recognized columns:
+          <code>player, pos, team, games, pass_yds, pass_td, int, rush_yds, rush_td, rec, rec_yds,
+          rec_td</code> — or just <code>player, fpts</code> if you already have projections.</p>
+        <div class="form-row">
+          <label>Player lines</label>
+          <textarea id="vgCsv" rows="7" placeholder="player,pos,team,rush_yds,rush_td,rec,rec_yds,rec_td&#10;Bijan Robinson,RB,ATL,1350,11,62,500,3"></textarea>
+        </div>
+        <div class="form-row">
+          <label>Team win totals <span class="muted">(optional, one per line)</span></label>
+          <textarea id="vgWins" rows="3" placeholder="BUF 11.5&#10;BAL 11.5"></textarea>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-ghost" data-close>Close</button>
+          <button id="btnVgImport" class="btn btn-primary">Import lines</button>
+        </div>
+      </div>
+      <div id="vegasMsg" class="error hidden"></div>
+    </div>
+  </div>
+
   <script src="js/data.js"></script>
+  <script src="js/vegas.js"></script>
   <script src="js/sleeper.js"></script>
   <script src="js/espn.js"></script>
   <script src="js/app.js"></script>

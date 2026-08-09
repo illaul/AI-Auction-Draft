@@ -145,6 +145,147 @@ app.get('/api/espn/players', async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// The Odds API proxy — live sportsbook player props.
+//
+// The Odds API serves per-game markets, not season-long totals, so we pull the
+// earliest slate of NFL games and return per-game consensus lines. The client
+// extrapolates those across an expected-games count to get a season view.
+// Requires the user's own API key (free tier at the-odds-api.com).
+// ---------------------------------------------------------------------------
+const ODDS_BASE = 'https://api.the-odds-api.com/v4';
+const PROP_MARKETS = [
+  'player_pass_yds', 'player_pass_tds', 'player_rush_yds',
+  'player_reception_yds', 'player_receptions', 'player_anytime_td',
+];
+const MARKET_FIELD = {
+  player_pass_yds: 'py', player_pass_tds: 'ptd', player_rush_yds: 'ry',
+  player_reception_yds: 'recy', player_receptions: 'rec',
+};
+
+/** Node's fetch reports every connectivity problem as a bare "fetch failed". */
+function netError(err) {
+  const msg = String(err && err.message || err);
+  if (/fetch failed|ENOTFOUND|ECONNREFUSED|EAI_AGAIN|ETIMEDOUT/i.test(msg)) {
+    return 'Could not reach the Odds API — check this machine\'s internet connection.';
+  }
+  return msg;
+}
+
+const median = (arr) => {
+  if (!arr.length) return 0;
+  const s = arr.slice().sort((a, b) => a - b);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+};
+
+app.get('/api/odds/status', async (req, res) => {
+  const key = req.query.key;
+  if (!key) return res.status(400).json({ error: 'An Odds API key is required' });
+  try {
+    const r = await fetch(`${ODDS_BASE}/sports/?apiKey=${encodeURIComponent(key)}`);
+    if (!r.ok) {
+      return res.status(r.status).json({
+        error: r.status === 401 ? 'Odds API rejected that key' : `Odds API responded ${r.status}`,
+      });
+    }
+    res.json({
+      ok: true,
+      creditsRemaining: r.headers.get('x-requests-remaining'),
+      creditsUsed: r.headers.get('x-requests-used'),
+    });
+  } catch (err) {
+    res.status(502).json({ error: netError(err) });
+  }
+});
+
+app.get('/api/odds/props', async (req, res) => {
+  const key = req.query.key;
+  if (!key) return res.status(400).json({ error: 'An Odds API key is required' });
+  const maxEvents = Math.min(20, Math.max(1, Number(req.query.maxEvents) || 16));
+  try {
+    const evRes = await fetch(
+      `${ODDS_BASE}/sports/americanfootball_nfl/events?apiKey=${encodeURIComponent(key)}`);
+    if (!evRes.ok) {
+      return res.status(evRes.status).json({
+        error: evRes.status === 401 ? 'Odds API rejected that key' : `Odds API responded ${evRes.status}`,
+      });
+    }
+    const events = await evRes.json();
+    if (!Array.isArray(events) || !events.length) {
+      return res.json({ players: {}, meta: { events: 0, note: 'No upcoming NFL events are posted yet.' } });
+    }
+    // Earliest slate first — that's the closest thing to a "next week" board.
+    events.sort((a, b) => new Date(a.commence_time) - new Date(b.commence_time));
+    const slate = events.slice(0, maxEvents);
+
+    // name -> market -> [lines from each book]
+    const acc = {};
+    const bump = (name, field, value) => {
+      const p = (acc[name] = acc[name] || {});
+      (p[field] = p[field] || []).push(value);
+    };
+
+    let creditsRemaining = null;
+    let fetched = 0;
+    for (const ev of slate) {
+      const url = `${ODDS_BASE}/sports/americanfootball_nfl/events/${ev.id}/odds`
+        + `?apiKey=${encodeURIComponent(key)}&regions=us&oddsFormat=american`
+        + `&markets=${PROP_MARKETS.join(',')}`;
+      const r = await fetch(url);
+      creditsRemaining = r.headers.get('x-requests-remaining') ?? creditsRemaining;
+      if (!r.ok) continue; // a game with no posted props just contributes nothing
+      fetched += 1;
+      const data = await r.json();
+      for (const bk of data.bookmakers || []) {
+        for (const mk of bk.markets || []) {
+          for (const oc of mk.outcomes || []) {
+            const who = oc.description;
+            if (!who) continue;
+            if (mk.key === 'player_anytime_td') {
+              if (String(oc.name).toLowerCase() !== 'yes') continue;
+              bump(who, '_tdPrice', Number(oc.price));
+            } else if (MARKET_FIELD[mk.key]) {
+              if (String(oc.name).toLowerCase() !== 'over') continue;
+              bump(who, MARKET_FIELD[mk.key], Number(oc.point));
+            }
+          }
+        }
+      }
+    }
+
+    // Consensus = median across books, per player, per market.
+    const players = {};
+    for (const [name, markets] of Object.entries(acc)) {
+      const out = { name };
+      for (const [field, vals] of Object.entries(markets)) {
+        if (field === '_tdPrice') continue;
+        out[field] = median(vals);
+      }
+      if (markets._tdPrice) {
+        // Anytime-TD price -> implied probability -> per-game TD expectation.
+        const probs = markets._tdPrice.map((a) => (a > 0 ? 100 / (a + 100) : -a / (-a + 100)));
+        const p = median(probs) * 0.93; // rough single-sided vig haircut
+        // Attribute the TD to rushing for backs, receiving for pass catchers.
+        if ((out.ry || 0) > (out.recy || 0)) out.rtd = p; else out.rectd = p;
+      }
+      players[name] = out;
+    }
+
+    res.json({
+      players,
+      meta: {
+        events: fetched,
+        requested: slate.length,
+        commenceTime: slate[0]?.commence_time || null,
+        creditsRemaining,
+      },
+    });
+  } catch (err) {
+    res.status(502).json({ error: netError(err) });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`AI Auction Draft running at http://localhost:${PORT}`);
 });

@@ -16,6 +16,42 @@ in-draft tooling.
 | **Two currencies** — dollars *and* roster spots | Max bid everywhere = money − (open spots − 1); the app blocks illegal bids and warns at the endgame |
 | **Room inflation** | Live inflation multiplier (remaining money ÷ remaining sheet value) and inflation-adjusted prices next to your sheet values |
 | **Coach bar** | Context-aware strategy tips (sitting-down bonus, mid-draft aggression, 1-QB value guarantee, max-bid rule, don't price-enforce…) that change as the draft progresses |
+| **Vegas edge** | Sportsbook props → fantasy points → auction dollars, compared against your sheet: ▲/▼ badges on the board, a Vegas tab ranking buys and fades, and Vegas-driven nomination suggestions |
+
+## Vegas lines
+
+The Vegas tab turns sportsbook player props into auction dollars and compares them to your own
+values. A **+$9 edge means the books' implied usage is worth $9 more than you have him priced** —
+that's the buy signal. Negative edge is the fade.
+
+**⚠️ The bundled lines are SAMPLE data, not real sportsbook numbers.** They exist so the feature
+is explorable out of the box. The app will not show Vegas edges on the player board until you
+either load real lines or explicitly click "Show sample edges anyway". Two ways to load real ones:
+
+- **Fetch live** — paste a free [the-odds-api.com](https://the-odds-api.com) key. The server pulls
+  consensus player props (pass/rush/receiving yards, receptions, anytime TD) across the next NFL
+  slate, takes the median line per player across books, de-vigs the anytime-TD price into a TD
+  expectation, and extrapolates to a season using your expected-games number. Each game sampled
+  costs API credits.
+- **Import / paste** — a CSV or TSV of season-long props with a header row. Recognized columns:
+  `player, pos, team, games, pass_yds, pass_td, int, rush_yds, rush_td, rec, rec_yds, rec_td` —
+  or just `player, fpts` if you already have projections. Optional team win totals paste in as
+  `BUF 11.5`, one per line.
+
+How the dollars are computed: projections → value over replacement at each position → dollars.
+Because prop coverage is almost always partial (books post props for ~50 players; a 12-team league
+drafts ~190), the model **calibrates against your own board** rather than the league's full budget —
+it redistributes the dollars you already assign to the covered players. That keeps edges honest at
+any coverage level. Replacement level for a position deeper than your coverage is estimated by
+fitting the observed rank-vs-points decay.
+
+Two controls worth knowing:
+
+- **Compare** defaults to *within position* — "among tight ends, do the books like him more than you
+  do". Choosing RB over WR is your tiers' job, not the books'. *Across all positions* is available
+  but only trustworthy when every position has deep coverage.
+- **Blend** (default 0%) mixes Vegas dollars into the values the app prices with. At 0% Vegas is
+  pure signal and your numbers drive everything; 25–40% lets the books nudge your sheet.
 
 Player values/tiers ship with an editable default cheat sheet (12-team, $200, 16 spots).
 Click any player → **Edit Value/Tier** to make it your own; ⭐ mark targets. Everything persists
