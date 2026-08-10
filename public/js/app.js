@@ -1215,7 +1215,6 @@
     renderVegas();
     renderValueBoard();
     renderWinners();
-    renderValueTab();
   }
 
   function renderTopStats() {
@@ -1927,67 +1926,7 @@
       ${lockout}`;
   }
 
-  function renderValueTab() {
-    const el = $('#tab-value');
-    el.innerHTML = `
-      <div class="panel-note">
-        <b>💎 Value board — blocks of ${state.settings.teams}</b>
-        <div class="muted">Everyone left, ranked by <b>anchored worth</b> — the analyst board and
-        the Vegas books, and nothing else. What the room is bidding never moves this number; it
-        only moves the price. Each block is one nomination cycle, sorted by the gap.</div>
-      </div>
-      <div class="win-head vb-legend"><span></span><span>Player</span><span>Worth</span><span>Cost</span><span>Edge</span></div>
-      ${renderValueBlocks()}`;
-    $$('#tab-value .vb-item').forEach((n) =>
-      n.addEventListener('click', () => openDraftModal(n.dataset.pid)));
-  }
 
-  /**
-   * The board in blocks of one nomination cycle (one player per team).
-   *
-   * Everyone left is ranked by anchored worth — analysts plus books, untouched
-   * by what the room is doing — then cut into blocks the size of the league.
-   * Inside each block the question is only ever "who is underpriced here",
-   * which is what the value column answers.
-   */
-  function renderValueBlocks() {
-    const infl = inflation();
-    const size = state.settings.teams;
-    const pool = undrafted()
-      .filter((p) => p.pos !== 'K' && p.pos !== 'DST')
-      .map((p) => ({ p, worth: anchorValue(p), price: adjValue(p, infl) }))
-      .map((x) => ({ ...x, edge: x.worth - x.price }))
-      .sort((a, b) => b.worth - a.worth);
-    if (!pool.length) return '';
-
-    const blocks = [];
-    for (let i = 0; i < Math.min(pool.length, size * 6); i += size) {
-      blocks.push({ from: i + 1, to: Math.min(i + size, pool.length), rows: pool.slice(i, i + size) });
-    }
-
-    return blocks.map((b) => {
-      const best = b.rows.slice().sort((x, y) => y.edge - x.edge).slice(0, 3).map((x) => x.p.id);
-      const rows = b.rows
-        .slice()
-        .sort((x, y) => y.edge - x.edge)
-        .map((x) => {
-          const good = best.includes(x.p.id) && x.edge > 0;
-          return `<div class="vb-item${good ? ' pick' : ''}" data-pid="${x.p.id}"
-                       title="Worth $${x.worth} (analysts + books) · should cost about $${x.price}">
-            <span class="pos-chip pos-${x.p.pos}">${x.p.pos}</span>
-            <span class="fill">${good ? '★ ' : ''}${x.p.n}</span>
-            <span class="worth">$${x.worth}</span>
-            <span class="price">$${x.price}</span>
-            <span class="edge ${x.edge > 0 ? 'up' : x.edge < 0 ? 'down' : ''}">${x.edge > 0 ? '+' : ''}${x.edge}</span>
-          </div>`;
-        }).join('');
-      const blockEdge = b.rows.reduce((s, x) => s + Math.max(0, x.edge), 0);
-      return `<div class="vb-block">
-        <div class="vb-head"><span>Players ${b.from}–${b.to}</span><span class="muted">$${blockEdge} of value in this block</span></div>
-        ${rows}
-      </div>`;
-    }).join('');
-  }
 
   /**
    * Key handcuffs, league-wide.
