@@ -1744,11 +1744,16 @@
     const banner = sample
       ? `<div class="vg-banner ${v.allowSample ? 'warn' : 'stop'}">
            <b>⚠️ Sample data — these are NOT real sportsbook lines.</b>
-           <div class="muted">They exist so you can see how the tool works. Fetch or import real
-           lines before draft day.</div>
-           ${v.allowSample
-             ? '<button id="btnVgDisallow" class="btn btn-sm btn-ghost">Hide sample edges</button>'
-             : '<button id="btnVgAllow" class="btn btn-sm btn-ghost">Show sample edges anyway</button>'}
+           <div class="muted">Having an API key isn't enough — lines have to be pulled. ${
+             serverHasOddsKey
+               ? 'Your server key is set, so this is one click.'
+               : 'Add your Odds API key first, then fetch.'}</div>
+           <div class="vg-banner-actions">
+             <button id="btnVgFetchNow" class="btn btn-sm btn-primary">⬇ Fetch live lines now</button>
+             ${v.allowSample
+               ? '<button id="btnVgDisallow" class="btn btn-sm btn-ghost">Hide sample edges</button>'
+               : '<button id="btnVgAllow" class="btn btn-sm btn-ghost">Show sample edges anyway</button>'}
+           </div>
          </div>`
       : `<div class="vg-banner ok"><b>✓ ${v.source === 'odds-api' ? 'Live Odds API lines' : 'Imported lines'}</b>
            <div class="muted">${lineCount} players · ${v.asOf}${v.meta?.events ? ` · ${v.meta.events} games sampled` : ''}</div></div>`;
@@ -1868,6 +1873,17 @@
     el.innerHTML = banner + controls + body;
 
     const bind = (sel, ev, fn) => { const n = $(sel); if (n) n.addEventListener(ev, fn); };
+    bind('#btnVgFetchNow', 'click', () => {
+      // Open the fetch panel so the result — success or failure — is visible,
+      // then run the same fetch the panel's own button runs.
+      $('#vegasMsg').classList.add('hidden');
+      $$('#vegTabs button').forEach((x) => x.classList.remove('active'));
+      $('#vegTabs button[data-vtab="fetch"]').classList.add('active');
+      $$('#modalVegas .ctab-body').forEach((x) => x.classList.add('hidden'));
+      show('#vtab-fetch');
+      show('#modalVegas');
+      vegasFetch();
+    });
     bind('#btnVgAllow', 'click', () => { state.vegas.allowSample = true; save(); renderAll(); });
     bind('#btnVgDisallow', 'click', () => { state.vegas.allowSample = false; save(); renderAll(); });
     bind('#btnVgOpen', 'click', () => { $('#vegasMsg').classList.add('hidden'); show('#modalVegas'); });
@@ -2211,6 +2227,9 @@
       if (!r.ok) return;
       const b = await r.json();
       serverHasOddsKey = !!b.serverKey;
+      // The first render ran before this resolved, so redraw the banner with
+      // the right guidance now that we know a server key exists.
+      if (serverHasOddsKey) renderVegas();
       if (serverHasOddsKey && field) {
         field.placeholder = 'using the key set on the server';
         const note = $('#vgKeyNote');
