@@ -7,6 +7,23 @@
  */
 const express = require('express');
 const path = require('path');
+const fs = require('fs');
+
+// Minimal .env loader — enough for KEY=value lines, without a dependency.
+// Real environment variables always win, so `ODDS_API_KEY=… npm start` overrides
+// the file. Never commit .env; see .env.example.
+(function loadDotEnv() {
+  try {
+    const file = path.join(__dirname, '.env');
+    if (!fs.existsSync(file)) return;
+    for (const line of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
+      const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+      if (!m || line.trim().startsWith('#')) continue;
+      const value = m[2].trim().replace(/^(['"])(.*)\1$/, '$2');
+      if (process.env[m[1]] === undefined && value) process.env[m[1]] = value;
+    }
+  } catch (_) { /* unreadable .env just means no file-based config */ }
+})();
 
 // Respect HTTPS_PROXY/HTTP_PROXY for outbound fetches when running behind a
 // corporate/egress proxy (Node's fetch ignores these env vars by default).
@@ -254,8 +271,24 @@ app.get('/api/playoff-schedule', async (req, res) => {
   }
 });
 
+/**
+ * Where the Odds API key comes from.
+ *
+ * Preferring the server's environment keeps the key out of the browser and out
+ * of request URLs entirely — set ODDS_API_KEY (a .env line or an exported shell
+ * var) and the client never has to hold it. A key typed into the UI still works
+ * as a fallback for a one-off.
+ */
+const serverOddsKey = () => (process.env.ODDS_API_KEY || '').trim();
+const resolveOddsKey = (req) => serverOddsKey() || (req.query.key || '').trim();
+
+// Lets the UI say "the server already has a key" instead of demanding one.
+app.get('/api/odds/config', (_req, res) => {
+  res.json({ serverKey: !!serverOddsKey() });
+});
+
 app.get('/api/odds/status', async (req, res) => {
-  const key = req.query.key;
+  const key = resolveOddsKey(req);
   if (!key) return res.status(400).json({ error: 'An Odds API key is required' });
   try {
     const r = await fetch(`${ODDS_BASE}/sports/?apiKey=${encodeURIComponent(key)}`);
@@ -275,7 +308,7 @@ app.get('/api/odds/status', async (req, res) => {
 });
 
 app.get('/api/odds/props', async (req, res) => {
-  const key = req.query.key;
+  const key = resolveOddsKey(req);
   if (!key) return res.status(400).json({ error: 'An Odds API key is required' });
   const maxEvents = Math.min(20, Math.max(1, Number(req.query.maxEvents) || 16));
   try {

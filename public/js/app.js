@@ -2243,9 +2243,56 @@
     el.classList.remove('hidden');
   }
 
+  /**
+   * The Odds API key, remembered between sessions.
+   *
+   * Kept in its own localStorage entry rather than in the draft state, so
+   * resetting a draft never wipes it. When the server has ODDS_API_KEY set the
+   * browser never needs to hold the key at all.
+   */
+  const ODDS_KEY_STORE = 'auction-war-room-odds-key';
+  const savedOddsKey = () => {
+    try { return localStorage.getItem(ODDS_KEY_STORE) || ''; } catch (_) { return ''; }
+  };
+  const rememberOddsKey = (k) => {
+    try {
+      if (k) localStorage.setItem(ODDS_KEY_STORE, k);
+      else localStorage.removeItem(ODDS_KEY_STORE);
+    } catch (_) { /* private browsing — the key just won't persist */ }
+  };
+
+  let serverHasOddsKey = false;
+
+  /** Fills the key field from storage and reports a server-held key. */
+  async function initOddsKey() {
+    const field = $('#vgKey');
+    if (field && !field.value) field.value = savedOddsKey();
+    try {
+      const r = await fetch('/api/odds/config');
+      if (!r.ok) return;
+      const b = await r.json();
+      serverHasOddsKey = !!b.serverKey;
+      if (serverHasOddsKey && field) {
+        field.placeholder = 'using the key set on the server';
+        const note = $('#vgKeyNote');
+        if (note) {
+          note.textContent = 'The server has ODDS_API_KEY set, so you can leave this blank.';
+          note.classList.remove('hidden');
+        }
+      }
+    } catch (_) { /* offline — typed keys still work */ }
+  }
+
+  /** The key to send: blank is fine when the server holds one. */
+  function oddsKeyForRequest() {
+    const typed = ($('#vgKey').value || '').trim();
+    if (typed) rememberOddsKey(typed);
+    return typed;
+  }
+
   async function vegasTestKey() {
-    const key = $('#vgKey').value.trim();
-    if (!key) return vegasMsg('Enter your Odds API key first.', true);
+    const key = oddsKeyForRequest();
+    if (!key && !serverHasOddsKey) return vegasMsg('Enter your Odds API key first.', true);
     try {
       const r = await fetch(`/api/odds/status?key=${encodeURIComponent(key)}`);
       const b = await r.json();
@@ -2257,8 +2304,8 @@
   }
 
   async function vegasFetch() {
-    const key = $('#vgKey').value.trim();
-    if (!key) return vegasMsg('Enter your Odds API key first.', true);
+    const key = oddsKeyForRequest();
+    if (!key && !serverHasOddsKey) return vegasMsg('Enter your Odds API key first.', true);
     const expectedGames = Number($('#vgGames').value) || 16.2;
     const maxEvents = Number($('#vgMaxEvents').value) || 16;
     const btn = $('#btnVgFetch');
@@ -2810,4 +2857,5 @@
   wire();
   renderAll();
   startPolling();
+  initOddsKey();
 })();
