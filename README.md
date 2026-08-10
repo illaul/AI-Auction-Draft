@@ -19,6 +19,8 @@ in-draft tooling.
 | **Vegas edge — Strategy by Faraz** | Rank divergence between the sportsbooks and the fantasy analysts: buy where Vegas ranks a player well above the analyst consensus, fade the reverse |
 | **League winners & overspend ceiling** | Who's worth breaking your budget for, how far over market you're justified going, and the hard limit past which your starting lineup can't be filled |
 | **Buying power & war chest** | Prices are set by the richest rival, not your sheet — tracks when the room goes broke and the board becomes yours at a discount, and protects the money to take it |
+| **Value board & value bank** | Worth is anchored in the analyst board + Vegas books, never in what the room is bidding — a Value tab ranks everyone left by that worth in blocks of one nomination cycle, and Value banked tracks the surplus you've earned buying under worth, your license to outbid in a war |
+| **Draft Plan** | A live, full-roster answer to "what's my best team from here" — every slot, drafted or targeted, re-solved after every pick in the room, with a tier survival forecast, positional-run and archetype reads, and a caution list feeding your decoy nominations |
 
 ## Buying power & the bench war chest
 
@@ -51,18 +53,98 @@ alert the moment the window opens, and the opposite one when 70%+ of the room ca
 ### What makes a bench player worth paying for
 
 In a streaming league generic depth is free — you can get that off waivers. What waivers *cannot*
-hand you is the handcuff to your own stud or a breakout before he breaks out. So the bench score
+hand you is a handcuff to a real starter or a breakout before he breaks out. So the bench score
 weights four factors, tilted by your **waiver setting** (⚙︎ → Waiver wire):
 
 | Factor | Why |
 | --- | --- |
-| **Handcuff** 🔗 | Backs up a player you already own. Lose your bell-cow and you inherit the entire workload — weighted highest for RBs, where the workload transfer is near-total |
+| **Handcuff** 🔗 | Backs up a real starter **anywhere in the league**, not just on your own roster — injuries don't check who owns whom. Only counts once the backup clears a worth floor of his own, confirmed against the analyst board and Vegas books, so "next on the depth chart" alone doesn't qualify. Weighted highest for RBs, where the workload transfer is near-total |
 | **Upside vs. cost** | Production per dollar at what he'll *actually clear for*, not sheet value |
 | **Bye coverage** | Penalised if he shares a bye with your starter at that position, rewarded if he covers it |
 | **Scarcity insurance** | Depth where the pool is drying up — dialled down in streaming leagues, up in locked ones |
 
 Bye weeks come from ESPN's public pro-team schedule (no auth, so Sleeper drafters get them too).
 They're pulled automatically when you connect a draft, or on demand via ⚙︎ → **Fetch bye weeks**.
+
+## Value board & the value bank
+
+**A player's worth comes from the analyst board and the Vegas books — never from what the room is
+bidding.** Bidding decides what you pay; the analysts and the books decide what he's worth, and the
+gap between the two is the entire game. That worth (`anchorValue`, an even blend of your board and
+Vegas dollars once Vegas data is active) now drives every "$" figure shown against a player, while
+his inflation-adjusted **market** price — a separate figure — is what the room will actually make
+him cost.
+
+The **Value** tab lists everyone left, ranked purely by worth, in blocks the size of your league —
+one full trip through the nomination order — so you can see who survives each cycle without the
+room's own bidding warping the ranking. Each row shows worth, market, the edge between them, and
+the Faraz buy/fade badge where Vegas lines are loaded.
+
+**Value banked**, on the My Team tab, sums worth-minus-price across everything you've drafted so
+far. A positive bank is money you've effectively made by buying under value — spend it as
+justification to go over the odds the next time you're in a real bidding war for a player you want.
+
+## Draft Plan
+
+**What's the best full team achievable from right now, and how does that change as the room drafts
+around you?** The **Plan** tab answers that live: every one of your 9 starting slots (QB / 2 RB /
+2 WR / TE / FLEX / K / DST) gets a target — drafted or recommended — solved fresh after *every* pick
+in the room, not just yours. K/DST are deliberate $1 endgame picks, never part of the points chase.
+
+- **Objective is points, not dollars.** Slots are filled to maximize total points above a starter
+  (the same metric behind the Winners tab), priced at what a player will actually cost — not what
+  he's "worth" — inside your remaining budget.
+- **Best value available, wherever it fits.** There's no rigid QB-then-RB-then-WR fill order. A
+  third RB better than anything else on the board takes FLEX or bench instead of being passed over
+  for a premature kicker buy.
+- **Re-solved from scratch, not patched.** Grab a tier-1 player off-plan because he fell into your
+  range, and the plan doesn't need a special rule to "adjust" — a fresh solve from your new budget
+  and slots naturally finds the best remaining answer, even if that means a cheaper target at some
+  other slot later.
+- **Sticky.** A slot keeps its current target unless the fresh solve finds someone a full tier
+  better, so the plan doesn't visibly reshuffle just because an unrelated team made a pick.
+- **Tier % — a forecast, never a bet on a name.** Nomination order in a real auction is random, so
+  the plan won't claim "you'll get Player X in two picks." Instead it estimates, from the position's
+  own pace so far, how likely his *tier* still has survivors by your next 2–3 turns through the room.
+- **Bench** reuses the existing handcuff/upside/bye/scarcity scoring rather than the points
+  objective, since bench production scores you zero.
+
+### Reserve money for a target before you need it
+
+Star (⭐) a player from Edit Value/Tier and, if the Plan has him as a slot's target, his expected
+market price becomes that slot's protected reserve — the same floor math that already guarantees a
+startable lineup now specifically protects *him*, so early bidding elsewhere can't quietly price him
+out before you get to nominate him.
+
+### Reading the room
+
+- **🏃 Positional runs.** When a position's share of the last half-cycle of picks runs well ahead of
+  its normal pace, the Plan flags it — prices there are inflated; sit it out, or nominate an ignored
+  position while the room's distracted.
+- **📐 Archetype read.** The Plan compares each position's actual sale prices to sheet value against
+  the room's overall rate. If RB is selling hot and WR cold (or vice versa), it says so — and it's
+  already leaning the plan's own pricing that way, not just reporting it.
+- **🧊 / 🔥 Contestedness.** Each planned target is checked against every rival who both needs his
+  position and can currently afford him. Uncontested (🧊) → nominate him yourself and get him cheap.
+  Contested (🔥) → expect a war, or use him as someone else's bait instead.
+- **💱 Trade value**, in the Nomination Helper, flags players who don't fill *your* need but several
+  rivals are thin at — good value regardless, since this app only signals the opportunity live on
+  draft day and has no post-draft trade board to act on it later.
+- **⚠️ Stack risk** notes when your own roster concentrates several players on one NFL team or bye
+  week — never a block, just something to weigh.
+
+### Caution list
+
+Never a block — a flagged player still gets recommended if he's genuinely the best value on the
+board. Auto-flags: market price running well above worth, and (once you've fetched the playoff
+schedule below) a tough fantasy-playoff-week (weeks 15–17) slate. Add your own reasons any time via
+🚧 in Edit Value/Tier. The list feeds the Nomination Helper's decoy suggestions — a name the room
+still likes is good bait even after your own numbers have soured on him.
+
+Fetch bye weeks (⚙︎ → **Fetch bye + playoff schedule**) also pulls each team's weeks 15/16/17
+opponents off ESPN's public schedule, best-effort — opponent strength is read from the same team win
+totals the Vegas tab already tracks. ESPN doesn't document this field, so it can fail quietly; the
+caution list just won't show a playoff reason until it succeeds.
 
 ## League winners & the overspend ceiling
 
