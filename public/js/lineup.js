@@ -12,17 +12,17 @@
 window.LineupEngine = (function () {
   'use strict';
 
-  const STARTER_SLOTS = ['QB', 'RB', 'RB', 'WR', 'WR', 'TE', 'FLX', 'FLX', 'K', 'DST'];
+  const STARTER_SLOTS = ['QB', 'RB', 'RB', 'WR', 'WR', 'TE', 'FLX', 'K', 'DST'];
   const FLEX_POS = ['RB', 'WR', 'TE'];
-  /** How the two flex slots historically split across positions. */
+  /** How the single flex slot historically splits across positions. */
   const FLEX_SHARE = { RB: 0.45, WR: 0.45, TE: 0.10 };
   const BASE_STARTERS = { QB: 1, RB: 2, WR: 2, TE: 1, K: 1, DST: 1 };
 
   const slotEligible = (slot, pos) => (slot === 'FLX' ? FLEX_POS.includes(pos) : slot === pos);
 
-  /** Starting jobs per team at a position, including its share of the flexes. */
+  /** Starting jobs per team at a position, including its share of the flex. */
   function startersPerTeam(pos) {
-    return (BASE_STARTERS[pos] || 0) + (FLEX_SHARE[pos] || 0) * 2;
+    return (BASE_STARTERS[pos] || 0) + (FLEX_SHARE[pos] || 0) * 1;
   }
 
   /**
@@ -87,7 +87,8 @@ window.LineupEngine = (function () {
    * covering a bye, or by outgrowing what you paid. Weights shift with how much
    * the waiver wire can replace — in a streaming league generic depth is free,
    * so the only bench spots worth paying for are the ones waivers can't hand
-   * you: the handcuff to your own stud, and the breakout nobody has noticed.
+   * you: a league-wide handcuff to a real starter (injuries don't check who
+   * owns whom), and the breakout nobody has noticed.
    */
   const BENCH_WEIGHTS = {
     active: { handcuff: 0.35, upside: 0.45, bye: 0.10, scarcity: 0.10 },

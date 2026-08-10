@@ -65,16 +65,20 @@
     <section id="rightPanel" class="panel">
       <div class="tabs" id="rightTabs">
         <button data-tab="myteam" class="active">My Team</button>
+        <button data-tab="plan">Plan</button>
         <button data-tab="parsheet">Par Sheet</button>
         <button data-tab="teams">League</button>
         <button data-tab="vegas">Vegas</button>
+        <button data-tab="value">Value</button>
         <button data-tab="winners">Winners</button>
         <button data-tab="value">Value</button>
       </div>
       <div id="tab-myteam" class="tab-body"></div>
+      <div id="tab-plan" class="tab-body hidden"></div>
       <div id="tab-parsheet" class="tab-body hidden"></div>
       <div id="tab-teams" class="tab-body hidden"></div>
       <div id="tab-vegas" class="tab-body hidden"></div>
+      <div id="tab-value" class="tab-body hidden"></div>
       <div id="tab-winners" class="tab-body hidden"></div>
       <div id="tab-value" class="tab-body hidden"></div>
     </section>
@@ -111,6 +115,7 @@
       <div class="form-row"><label>My value ($)</label><input id="editValue" type="number" min="0" /></div>
       <div class="form-row"><label>Tier</label><input id="editTier" type="number" min="1" max="12" /></div>
       <div class="form-row"><label class="chk"><input type="checkbox" id="editTarget" /> ⭐ Target this player</label></div>
+      <div class="form-row"><label class="chk"><input type="checkbox" id="editCaution" /> 🚧 Caution — good decoy, not someone I want</label></div>
       <div class="modal-actions">
         <button class="btn btn-ghost" data-close>Cancel</button>
         <button id="btnSaveEdit" class="btn btn-primary">Save</button>
@@ -187,7 +192,7 @@
       </div>
       <div class="form-row">
         <label>Bye weeks</label>
-        <button id="btnFetchByes" class="btn btn-sm">Fetch bye weeks</button>
+        <button id="btnFetchByes" class="btn btn-sm">Fetch bye + playoff schedule</button>
         <span id="byeStatus" class="muted"></span>
       </div>
       <div class="form-row"><label>Team names</label><textarea id="setTeamNames" rows="6" placeholder="One per line"></textarea></div>

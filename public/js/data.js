@@ -2,7 +2,7 @@
  * Default player pool, par-sheet builds, and strategy tips.
  *
  * Values are $-denominated for a 12-team, $200-budget, 16-roster-spot league
- * (QB / 2 RB / 2 WR / TE / 2 FLEX / K / DST / 6 BN). Every value and tier is
+ * (QB / 2 RB / 2 WR / TE / FLEX / K / DST / 7 BN). Every value and tier is
  * editable in the app — treat these as a starting cheat sheet, not gospel.
  */
 
@@ -246,46 +246,46 @@ const DEFAULT_PLAYERS = [
  */
 const PAR_BUILDS = {
   'Hero RB': [
-    ['RB', 55], ['RB', 12], ['WR', 40], ['WR', 30], ['FLX', 20], ['FLX', 12],
+    ['RB', 55], ['RB', 12], ['WR', 40], ['WR', 30], ['FLX', 20],
     ['TE', 10], ['QB', 8], ['K', 1], ['DST', 1],
-    ['BN', 2], ['BN', 2], ['BN', 2], ['BN', 2], ['BN', 2], ['BN', 1],
+    ['BN', 2], ['BN', 2], ['BN', 2], ['BN', 2], ['BN', 2], ['BN', 1], ['BN', 12],
   ],
   'Zero RB': [
     ['WR', 55], ['WR', 45], ['FLX', 30], ['TE', 25], ['RB', 12], ['RB', 8],
-    ['FLX', 10], ['QB', 6], ['K', 1], ['DST', 1],
-    ['BN', 2], ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1],
+    ['QB', 6], ['K', 1], ['DST', 1],
+    ['BN', 2], ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 10],
   ],
   'Robust RB': [
-    ['RB', 60], ['RB', 45], ['FLX', 25], ['WR', 25], ['WR', 15], ['FLX', 10],
+    ['RB', 60], ['RB', 45], ['FLX', 25], ['WR', 25], ['WR', 15],
     ['TE', 8], ['QB', 4], ['K', 1], ['DST', 1],
-    ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1],
+    ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 10],
   ],
   'WR Robust': [
-    ['WR', 55], ['WR', 45], ['FLX', 35], ['RB', 25], ['RB', 10], ['FLX', 8],
+    ['WR', 55], ['WR', 45], ['FLX', 35], ['RB', 25], ['RB', 10],
     ['TE', 8], ['QB', 6], ['K', 1], ['DST', 1],
-    ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1],
+    ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 8],
   ],
   'Brock Bowers Build': [
     ['TE', 36], ['RB', 45], ['WR', 40], ['WR', 25], ['RB', 20], ['FLX', 12],
-    ['FLX', 8], ['QB', 6], ['K', 1], ['DST', 1],
-    ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1],
+    ['QB', 6], ['K', 1], ['DST', 1],
+    ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 8],
   ],
   'Josh Allen Build': [
     ['QB', 30], ['RB', 45], ['WR', 40], ['WR', 28], ['RB', 20], ['FLX', 12],
-    ['FLX', 9], ['TE', 8], ['K', 1], ['DST', 1],
-    ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1],
+    ['TE', 8], ['K', 1], ['DST', 1],
+    ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 9],
   ],
   // Bench points score you nothing — every bench slot is a $1 lottery ticket
-  // and the whole budget goes into the ten slots that actually play.
+  // and the whole budget goes into the nine slots that actually play.
   'Starters First': [
-    ['RB', 50], ['RB', 34], ['WR', 44], ['WR', 32], ['FLX', 22], ['FLX', 16],
+    ['RB', 50], ['RB', 34], ['WR', 44], ['WR', 32], ['FLX', 22],
     ['TE', 14], ['QB', 10], ['K', 1], ['DST', 1],
-    ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1],
+    ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 1], ['BN', 16],
   ],
   'Balanced': [
-    ['RB', 40], ['RB', 28], ['WR', 34], ['WR', 26], ['FLX', 18], ['FLX', 14],
+    ['RB', 40], ['RB', 28], ['WR', 34], ['WR', 26], ['FLX', 18],
     ['TE', 12], ['QB', 14], ['K', 1], ['DST', 1],
-    ['BN', 2], ['BN', 2], ['BN', 2], ['BN', 2], ['BN', 2], ['BN', 2],
+    ['BN', 2], ['BN', 2], ['BN', 2], ['BN', 2], ['BN', 2], ['BN', 2], ['BN', 14],
   ],
 };
 

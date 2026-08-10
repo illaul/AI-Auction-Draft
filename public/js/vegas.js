@@ -50,13 +50,13 @@ window.VegasEngine = (function () {
    */
   function draftedCounts(league) {
     const { teams, rosterSize } = league;
-    const startersUsed = 10; // QB, RB×2, WR×2, TE, FLEX×2, K, DST
+    const startersUsed = 9; // QB, RB×2, WR×2, TE, FLEX, K, DST
     const bench = Math.max(0, rosterSize - startersUsed);
     return {
       QB: Math.round(teams * (1 + bench * 0.10)),
-      RB: Math.round(teams * (2 + 2 * 0.45 + bench * 0.40)),
-      WR: Math.round(teams * (2 + 2 * 0.45 + bench * 0.40)),
-      TE: Math.round(teams * (1 + 2 * 0.10 + bench * 0.10)),
+      RB: Math.round(teams * (2 + 1 * 0.45 + bench * 0.40)),
+      WR: Math.round(teams * (2 + 1 * 0.45 + bench * 0.40)),
+      TE: Math.round(teams * (1 + 1 * 0.10 + bench * 0.10)),
       K: teams,
       DST: teams,
     };

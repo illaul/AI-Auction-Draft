@@ -205,6 +205,55 @@ app.get('/api/byes', async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Fantasy-playoff-week opponents (weeks 15/16/17). Best-effort: reads the
+// per-team weekly schedule off the same public ESPN payload the bye endpoint
+// uses. ESPN doesn't document this shape, so this degrades to a clear error
+// rather than silently returning wrong data if the field isn't there.
+// GET /api/playoff-schedule?year=2026  ->  { "BUF": {"15":"KC","16":"NYJ","17":"MIA"}, ... }
+// ---------------------------------------------------------------------------
+const PLAYOFF_WEEKS = [15, 16, 17];
+const scheduleCache = new Map();
+
+app.get('/api/playoff-schedule', async (req, res) => {
+  const { year } = req.query;
+  if (!/^\d{4}$/.test(year || '')) return res.status(400).json({ error: 'year is required' });
+  const DAY = 24 * 60 * 60 * 1000;
+  const hit = scheduleCache.get(year);
+  if (hit && Date.now() - hit.time < DAY) return res.json(hit.data);
+  try {
+    const url = `${ESPN_BASE}/seasons/${year}?view=proTeamSchedules_wl`;
+    const r = await fetch(url, { headers: espnHeaders({}) });
+    if (!r.ok) return res.status(r.status).json({ error: `ESPN responded ${r.status}` });
+    const data = await r.json();
+    const teams = data?.settings?.proTeams || [];
+    const byId = {};
+    for (const t of teams) if (t.id && t.abbrev) byId[t.id] = String(t.abbrev).toUpperCase();
+
+    const schedule = {};
+    for (const t of teams) {
+      if (!t.abbrev || !t.proGamesByScoringPeriod) continue;
+      const weeks = {};
+      for (const wk of PLAYOFF_WEEKS) {
+        const games = t.proGamesByScoringPeriod[String(wk)];
+        const g = Array.isArray(games) ? games[0] : null;
+        if (!g) continue;
+        const oppId = g.awayProTeamId === t.id ? g.homeProTeamId : g.awayProTeamId;
+        if (byId[oppId]) weeks[wk] = byId[oppId];
+      }
+      if (Object.keys(weeks).length) schedule[String(t.abbrev).toUpperCase()] = weeks;
+    }
+
+    if (!Object.keys(schedule).length) {
+      return res.status(502).json({ error: 'ESPN did not return a weekly schedule for that season yet' });
+    }
+    scheduleCache.set(year, { time: Date.now(), data: schedule });
+    res.json(schedule);
+  } catch (err) {
+    res.status(502).json({ error: netError(err) });
+  }
+});
+
 app.get('/api/odds/status', async (req, res) => {
   const key = req.query.key;
   if (!key) return res.status(400).json({ error: 'An Odds API key is required' });

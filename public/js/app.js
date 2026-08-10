@@ -21,7 +21,7 @@
 
   const STORE_KEY = 'auction-war-room-v1';
   const FLEX_POS = ['RB', 'WR', 'TE'];
-  const STARTERS = { QB: 1, RB: 2, WR: 2, TE: 1, FLX: 2, K: 1, DST: 1 }; // + bench
+  const STARTERS = { QB: 1, RB: 2, WR: 2, TE: 1, FLX: 1, K: 1, DST: 1 }; // + bench
 
   // ---------------------------------------------------------------------------
   // State
@@ -33,10 +33,11 @@
     return {
       settings: { teams, budget: 200, rosterSize: 16, myTeam: 0, waivers: 'active' },
       byes: null,
+      playoffSchedule: null, // { "BUF": {"15":"KC","16":"NYJ","17":"MIA"}, ... }, best-effort
       teams: Array.from({ length: teams }, (_, i) => ({ name: `Team ${i + 1}`, spent: 0, picks: [] })),
       players: DEFAULT_PLAYERS.map((p, i) => ({
         id: `p${i}`, n: p.n, pos: p.pos, tm: p.tm, tier: p.tier, v: p.v,
-        target: false, draftedBy: null, price: 0,
+        target: false, caution: false, draftedBy: null, price: 0,
       })),
       log: [], // [{pid, team, price}] chronological
       parBuild: 'Hero RB',
@@ -54,6 +55,11 @@
       allowSample: false,   // must opt in before sample edges show on the board
       scoring: 'ppr',
       compare: 'pos',       // 'pos' = edges within a position | 'global' = across all
+      // % weight of Vegas dollars blended into player worth. Defaults to an even
+      // split once Vegas data is actually active (gated by vegasActive()/allowSample,
+      // so this has no effect until you load real lines or opt into the sample) —
+      // worth is anchored in the analysts AND the books, never in room bidding.
+      blend: 50,
       blend: 50,            // % weight of the books in a player's anchored worth
       lines: null,          // null => use the bundled sample
       raw: null,            // per-book payload, so book selection can change offline
@@ -78,6 +84,8 @@
         state.vegas = Object.assign(freshVegas(), state.vegas || {});
         if (!state.settings.waivers) state.settings.waivers = 'active';
         if (state.byes === undefined) state.byes = null;
+        if (state.playoffSchedule === undefined) state.playoffSchedule = null;
+        for (const p of state.players) if (p.caution === undefined) p.caution = false;
         return;
       }
     } catch (_) { /* fall through */ }
@@ -251,6 +259,8 @@
   /**
    * Surplus banked so far: for every player bought, his anchored worth minus
    * what was actually paid. A positive bank is ammunition — it's how much you
+   * can go over the odds on a player you truly want in a bidding war and
+   * still be net ahead across your whole roster.
    * can go over the odds on a player you truly want and still be ahead.
    */
   function valueBank(teamIdx) {
@@ -292,6 +302,155 @@
     return map;
   }
 
+  /**
+   * Tier survival forecast — Option B. Never names a player 2-3 picks out;
+   * nomination order is random in a real auction, so that would overclaim
+   * certainty. Instead: how many of this tier's survivors will likely be
+   * bought before you realistically act on this position again, judged from
+   * the position's OWN observed pace so far this draft.
+   */
+  // Before the room has shown a real pace, assume a position claims a share
+  // of picks proportional to how many starting jobs it fills league-wide.
+  const POS_PICK_SHARE = { QB: 0.09, RB: 0.30, WR: 0.30, TE: 0.09, K: 0.11, DST: 0.11 };
+
+  const PLAYOFF_WEEKS = [15, 16, 17];
+
+  /**
+   * Fantasy-playoff-week schedule read. Never adjusts worth or blocks a
+   * recommendation - a tough slate is a caveat you weigh, not a penalty
+   * baked silently into a dollar figure. Opponent strength is proxied by
+   * team win total (already tracked for Vegas), since that's the data this
+   * app actually has; real per-matchup projections aren't in scope.
+   */
+  function playoffRead(p) {
+    if (!state.playoffSchedule || !vegasActive() || !p.tm) return null;
+    const weeks = state.playoffSchedule[p.tm];
+    if (!weeks) return null;
+    const wins = activeWinTotals();
+    const rows = PLAYOFF_WEEKS.map((wk) => {
+      const opp = weeks[String(wk)];
+      const oppWins = opp ? wins[opp] : undefined;
+      return { week: wk, opp: opp || null, tough: oppWins !== undefined ? oppWins >= 10 : null };
+    }).filter((r) => r.opp);
+    if (!rows.length) return null;
+    const toughCount = rows.filter((r) => r.tough).length;
+    return { rows, toughCount, total: rows.length, bad: toughCount >= 2 };
+  }
+
+  function tierForecast(pos, tier) {
+    const remaining = (tierCounts()[`${pos}|${tier}`] || []).length;
+    const teams = state.settings.teams || 12;
+    const totalPicks = state.log.length;
+    const posPicks = state.log.filter((e) => {
+      const p = playerById(e.pid);
+      return p && p.pos === pos;
+    }).length;
+    const priorShare = POS_PICK_SHARE[pos] || 0.15;
+    const rate = totalPicks >= teams ? posPicks / totalPicks : priorShare;
+    const horizon = 2.5 * teams; // "2-3 turns" through the room
+    const projectedGone = rate * horizon;
+    const survivalPct = remaining <= 0 ? 0 : Math.max(0, Math.min(1, 1 - projectedGone / remaining));
+    return { pos, tier, remaining, projectedGone: Math.round(projectedGone), survivalPct, likely: survivalPct >= 0.5 };
+  }
+
+  /**
+   * Positional run detection: rooms panic-buy in streaks. Flags when a
+   * position's share of the last half-cycle of picks runs well ahead of its
+   * normal share - either sit that position out until prices cool, or use
+   * the room being distracted to nominate an ignored position you want.
+   */
+  function positionalRun() {
+    const teams = state.settings.teams || 12;
+    const windowSize = Math.min(state.log.length, Math.max(4, Math.round(teams * 0.5)));
+    if (windowSize < 4) return null;
+    const recent = state.log.slice(-windowSize);
+    const counts = {};
+    for (const e of recent) {
+      const p = playerById(e.pid);
+      if (p && p.pos !== 'K' && p.pos !== 'DST') counts[p.pos] = (counts[p.pos] || 0) + 1;
+    }
+    let best = null;
+    for (const [pos, n] of Object.entries(counts)) {
+      if (n < 3) continue;
+      const share = n / windowSize;
+      const expected = POS_PICK_SHARE[pos] || 0.15;
+      const ratio = share / expected;
+      if (ratio >= 1.8 && (!best || ratio > best.ratio)) best = { pos, n, windowSize, ratio };
+    }
+    return best;
+  }
+
+  /**
+   * Per-position pricing heat: how each position's ACTUAL sale prices so far
+   * compare to sheet value, relative to the room's overall rate. >1 means
+   * that position is selling hot (paying a premium), <1 means it's going at
+   * a discount. This is what lets the plan lean Hero RB / Zero RB / etc. on
+   * its own, from real prices, instead of a manually-chosen static preset.
+   */
+  function positionHeat() {
+    const byPos = {};
+    for (const e of state.log) {
+      const p = playerById(e.pid);
+      if (!p || p.pos === 'K' || p.pos === 'DST') continue;
+      const d = (byPos[p.pos] = byPos[p.pos] || { paid: 0, sheet: 0, n: 0 });
+      d.paid += e.price; d.sheet += Math.max(1, p.v); d.n += 1;
+    }
+    const totalPaid = Object.values(byPos).reduce((s, d) => s + d.paid, 0);
+    const totalSheet = Object.values(byPos).reduce((s, d) => s + d.sheet, 0);
+    const overall = totalSheet > 0 ? totalPaid / totalSheet : 1;
+    const heat = {};
+    for (const [pos, d] of Object.entries(byPos)) {
+      if (d.n >= 2 && overall > 0) heat[pos] = { rate: d.paid / d.sheet, vsRoom: (d.paid / d.sheet) / overall, n: d.n };
+    }
+    return { heat, overall };
+  }
+
+  /** Human-readable archetype lean from positionHeat(), for the Plan banner. */
+  function archetypeRead() {
+    const { heat } = positionHeat();
+    if (!heat.RB || !heat.WR) return null;
+    const diff = heat.RB.vsRoom - heat.WR.vsRoom;
+    if (Math.abs(diff) < 0.15) return null;
+    return diff > 0
+      ? {
+        lean: 'lean receiver-heavy',
+        why: `RB is selling ${Math.round((heat.RB.vsRoom - 1) * 100)}% hot vs the room's overall rate,
+          WR ${heat.WR.vsRoom >= 1 ? 'also running warm' : `${Math.round((1 - heat.WR.vsRoom) * 100)}% cold`}
+          — the room is paying a premium for RB scarcity. The plan is already fading that premium in
+          its own pricing.`,
+      }
+      : {
+        lean: 'lean back-heavy',
+        why: `WR is selling ${Math.round((heat.WR.vsRoom - 1) * 100)}% hot vs the room's overall rate,
+          RB ${heat.RB.vsRoom >= 1 ? 'also running warm' : `${Math.round((1 - heat.RB.vsRoom) * 100)}% cold`}
+          — RB is going at a discount right now. The plan is already leaning into it.`,
+      };
+  }
+
+  /**
+   * Soft warning (never a block) when a roster concentrates risk — several
+   * players from the same NFL team, or several sharing a bye week. Not
+   * something the plan's own points objective can see on its own.
+   */
+  function stackWarnings(teamIdx) {
+    const i = teamIdx === undefined ? state.settings.myTeam : teamIdx;
+    const picks = state.teams[i].picks.map((pk) => playerById(pk.pid)).filter(Boolean);
+    const byTeam = {}, byBye = {};
+    for (const p of picks) {
+      if (p.tm && p.tm !== 'FA') (byTeam[p.tm] = byTeam[p.tm] || []).push(p);
+      const bye = byeFor(p);
+      if (bye) (byBye[bye] = byBye[bye] || []).push(p);
+    }
+    const warnings = [];
+    for (const [tm, list] of Object.entries(byTeam)) {
+      if (list.length >= 3) warnings.push({ kind: 'team', label: tm, names: list.map((p) => p.n) });
+    }
+    for (const [wk, list] of Object.entries(byBye)) {
+      if (list.length >= 3) warnings.push({ kind: 'bye', label: `week ${wk}`, names: list.map((p) => p.n) });
+    }
+    return warnings;
+  }
+
   // ---------------------------------------------------------------------------
   // Starting-lineup engine — bench points are worth zero
   // ---------------------------------------------------------------------------
@@ -312,8 +471,9 @@
    * and what a startable option at each slot currently costs.
    */
   function lineupCtx() {
+    const starredKey = state.players.filter((p) => p.target).map((p) => p.id).join(',');
     const key = [state.log.length, state.settings.myTeam, state.settings.rosterSize,
-      state.settings.teams, state.vegas.stamp, state.vegas.blend].join('|');
+      state.settings.teams, state.vegas.stamp, state.vegas.blend, starredKey].join('|');
     if (lineupCache && lineupCache.key === key) return lineupCache.ctx;
 
     const infl = inflation();
@@ -351,6 +511,18 @@
       const mktIdx = Math.min(cands.length - 1, Math.max(0, Math.round(d * 0.4)));
       floors[slot] = Math.max(1, adjValue(cands[floorIdx], infl));
       marketFloors[slot] = Math.max(floors[slot], adjValue(cands[mktIdx], infl));
+
+      // A starred player at this slot is a specific target you've committed
+      // to, not just "any startable option" - reserve his expected cost
+      // directly so bidding elsewhere can't quietly price him out later.
+      // cands is already sorted by adjValue desc, so the first starred entry
+      // is the most expensive commitment at this slot.
+      const starred = cands.find((p) => p.target);
+      if (starred) {
+        const starredCost = adjValue(starred, infl);
+        floors[slot] = Math.max(floors[slot], starredCost);
+        marketFloors[slot] = Math.max(marketFloors[slot], starredCost);
+      }
     }
 
     const ctx = { infl, openByTeam, demand, floors, marketFloors };
@@ -450,17 +622,89 @@
     };
   }
 
+  /**
+   * How contested a specific target is: how many rivals both NEED his
+   * position among their starters and can actually AFFORD his expected
+   * price right now. Low-contested → nominate him yourself and get him
+   * cheap. High-contested → wait, or use him as someone else's decoy bait.
+   */
+  function contestedness(p) {
+    const me = state.settings.myTeam;
+    const price = adjValue(p, inflation());
+    let rivals = 0, field = 0;
+    state.teams.forEach((_, i) => {
+      if (i === me || teamSpotsLeft(i) <= 0) return;
+      field += 1;
+      const needs = teamNeeds(i);
+      const needsHim = needs.includes(p.pos) || (FLEX_POS.includes(p.pos) && needs.includes('FLX'));
+      if (needsHim && teamMaxBid(i) >= price) rivals += 1;
+    });
+    const level = rivals === 0 ? 'low' : rivals >= Math.max(2, Math.ceil(field * 0.35)) ? 'high' : 'med';
+    return { rivals, field, level };
+  }
+
+  /**
+   * Trade appeal: how many rivals need this player's position among their
+   * starters, regardless of whether he fits YOUR plan. A player who doesn't
+   * move your own targets can still be worth grabbing if enough of the
+   * league is thin at his spot - draft-day signal only, this app has no
+   * post-draft trade mechanism to act on it later.
+   */
+  function tradeValue(p) {
+    const me = state.settings.myTeam;
+    let weak = 0, field = 0;
+    state.teams.forEach((_, i) => {
+      if (i === me || teamSpotsLeft(i) <= 0) return;
+      field += 1;
+      const needs = teamNeeds(i);
+      if (needs.includes(p.pos) || (FLEX_POS.includes(p.pos) && needs.includes('FLX'))) weak += 1;
+    });
+    return { weak, field };
+  }
+
+  /**
+   * Caution list — never a block, and never removes anyone from the board:
+   * a flagged player still gets recommended if he's genuinely the best value
+   * available. Auto-flags market price running well above worth, and a rough
+   * fantasy-playoff-week schedule; plus manual entries from Edit Value/Tier.
+   * Feeds the nomination helper's decoy suggestions — a name the room still
+   * likes is good bait even when your own numbers have soured on him.
+   */
+  function cautionList() {
+    const infl = inflation();
+    const out = [];
+    for (const p of undrafted()) {
+      if (p.pos === 'K' || p.pos === 'DST') continue;
+      const reasons = [];
+      if (p.caution) reasons.push('flagged');
+      const worth = anchorValue(p);
+      const market = adjValue(p, infl);
+      if (market > worth * 1.15 && market - worth >= 3) reasons.push(`overpriced — mkt $${market} vs worth $${worth}`);
+      const pr = playoffRead(p);
+      if (pr && pr.bad) reasons.push(`tough playoff slate — wk ${pr.rows.filter((r) => r.tough).map((r) => r.week).join(', ')}`);
+      if (reasons.length) out.push({ p, reasons, market, worth });
+    }
+    return out.sort((a, b) => b.market - a.market);
+  }
+
   // ---- bench targets ------------------------------------------------------
-  /** Players who back up someone already on my roster. */
-  function handcuffSet(teamIdx) {
-    const mine = picksWithPos(teamIdx)
-      .map((pk) => playerById(pk.pid))
-      .filter((p) => p && ['RB', 'WR', 'TE', 'QB'].includes(p.pos));
+  /**
+   * Players who back up a real starter somewhere in the LEAGUE — not just on
+   * your own roster. Injuries don't check who owns whom, so the handcuff
+   * that pays off is whichever bell-cow around the league goes down next.
+   * A backup only counts once he clears a worth floor of his own, validated
+   * against the analyst board and Vegas books — "next on the depth chart"
+   * isn't insurance unless he'd actually produce if the job opened up.
+   */
+  function handcuffSet() {
+    const starters = state.players.filter((p) =>
+      p.draftedBy !== null && ['RB', 'WR', 'TE', 'QB'].includes(p.pos));
     const out = new Map();
-    if (!mine.length) return out;
+    if (!starters.length) return out;
     for (const p of undrafted()) {
       if (!p.tm || p.tm === 'FA') continue;
-      const covers = mine.find((m) => m.tm === p.tm && m.pos === p.pos && m.v > p.v);
+      if (anchorValue(p) < 3) continue;
+      const covers = starters.find((m) => m.tm === p.tm && m.pos === p.pos && anchorValue(m) > anchorValue(p));
       if (covers) {
         // Losing a bell-cow back hands his replacement the entire workload;
         // the same is far less true at receiver.
@@ -482,7 +726,7 @@
     if (benchCache && benchCache.key === key) return benchCache.map;
 
     const ctx = lineupCtx();
-    const cuffs = handcuffSet(me);
+    const cuffs = handcuffSet();
     const waivers = state.settings.waivers || 'active';
 
     // Bye weeks my current starters are off, per position.
@@ -566,6 +810,172 @@
     // there to win a late bid or two, not to sit idle while your starters rot.
     const cap = Math.max(spots, Math.round(teamRemaining(teamIdx) * 0.25));
     return Math.max(spots, Math.min(expected, cap));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Draft Plan — live full-roster optimizer
+  // ---------------------------------------------------------------------------
+  let planCache = null;
+
+  /**
+   * Live full-roster plan: assigns every remaining starting slot a target that
+   * maximizes total points above a starter (the same metric behind the
+   * Winners tab), priced at expected market cost, inside your remaining
+   * budget. K/DST are deliberate endgame punts, not part of the
+   * points-maximizing solve - their scoring barely moves with price, so a
+   * naive $-per-point greedy would grab them far too early. Bench slots reuse
+   * the existing bench-target scoring instead of points, since bench
+   * production is worth zero.
+   *
+   * Re-solved from scratch on every draft event - grabbing an off-plan value
+   * pick and having every downstream slot adjust needs no special case, it
+   * falls straight out of a fresh solve. Sticky: a slot keeps its
+   * previously-planned target unless the fresh solve finds someone a full
+   * tier better, so the plan doesn't visibly reshuffle on picks that don't
+   * concern it - a tier jump is worth more than anything else the plan could
+   * currently do with that money, so it's allowed to override.
+   */
+  function draftPlan(teamIdx) {
+    const i = teamIdx === undefined ? state.settings.myTeam : teamIdx;
+    const key = [state.log.length, i, state.settings.rosterSize, state.settings.teams,
+      state.vegas.stamp, state.vegas.blend].join('|');
+    if (planCache && planCache.key === key && planCache.plan.teamIdx === i) return planCache.plan;
+
+    const ctx = lineupCtx();
+    const infl = ctx.infl;
+    const assigned = LineupEngine.assignSlots(picksWithPos(i));
+    const openSlots = assigned.open.slice();
+
+    // Stable per-slot identity across renders ("RB#1", "RB#2", ...) so
+    // stickiness can track "this slot's target" even though assignSlots
+    // reports open slots as plain labels, not unique IDs.
+    const seen = {};
+    const slotIds = openSlots.map((slot) => {
+      seen[slot] = (seen[slot] || 0) + 1;
+      return `${slot}#${seen[slot]}`;
+    });
+    const prevTargets = (planCache && planCache.plan.teamIdx === i)
+      ? planCache.plan.starterMap : new Map();
+
+    const pool = undrafted().map((p) => {
+      const w = winnerFor(p);
+      return { p, value: w ? w.pas : 0, cost: adjValue(p, infl) };
+    });
+    const byId = new Map(pool.map((r) => [r.p.id, r]));
+    const { heat } = positionHeat();
+
+    const used = new Set();
+    const results = new Array(openSlots.length).fill(null);
+    const benchReserve = benchReserveFor(i);
+    let budget = Math.max(0, teamRemaining(i) - benchReserve);
+
+    const skillIdx = [], puntIdx = [];
+    openSlots.forEach((slot, idx) => ((slot === 'K' || slot === 'DST') ? puntIdx : skillIdx).push(idx));
+
+    // Punts: cheapest viable option at the position, full stop.
+    for (const idx of puntIdx) {
+      const slot = openSlots[idx];
+      const cand = pool.filter((r) => !used.has(r.p.id) && r.p.pos === slot)
+        .sort((a, b) => a.cost - b.cost)[0];
+      if (cand) { results[idx] = cand; used.add(cand.p.id); budget -= cand.cost; }
+    }
+
+    // Skill slots: at every step, spend on whichever (slot, player) pairing
+    // buys the most points for the money right now, wherever it fits - never
+    // a rigid QB-then-RB-then... fill order. Each candidate must leave enough
+    // to cover a startable floor at every OTHER still-open slot.
+    const remainingIdx = skillIdx.slice();
+    while (remainingIdx.length) {
+      const totalFloor = remainingIdx.reduce((s, idx) => s + Math.max(1, ctx.floors[openSlots[idx]] || 1), 0);
+      let best = null;
+      for (const idx of remainingIdx) {
+        const slot = openSlots[idx];
+        const otherFloors = totalFloor - Math.max(1, ctx.floors[slot] || 1);
+        const headroom = budget - otherFloors;
+        if (headroom < 1) continue;
+        for (const r of pool) {
+          if (used.has(r.p.id) || r.p.pos === 'K' || r.p.pos === 'DST') continue;
+          if (!LineupEngine.slotEligible(slot, r.p.pos)) continue;
+          if (r.cost > headroom) continue;
+          // Bias the ranking (never the actual cost or budget math) toward
+          // whichever position is currently going at a discount - this is
+          // what makes the plan lean Hero RB / Zero RB on its own, from real
+          // prices, without a bolted-on archetype rule.
+          const posHeat = (heat[r.p.pos] && heat[r.p.pos].vsRoom) || 1;
+          const perDollar = r.value / Math.max(1, r.cost * posHeat);
+          if (!best || perDollar > best.perDollar || (perDollar === best.perDollar && r.value > best.r.value)) {
+            best = { idx, r, perDollar };
+          }
+        }
+      }
+      if (!best) break;
+      results[best.idx] = best.r;
+      used.add(best.r.p.id);
+      budget -= best.r.cost;
+      remainingIdx.splice(remainingIdx.indexOf(best.idx), 1);
+    }
+
+    // Sticky pass: swap a slot back to its previous target unless the fresh
+    // pick is a full tier above him.
+    const claimed = new Set(used);
+    const starterMap = new Map();
+    const openRows = openSlots.map((slot, idx) => {
+      const slotId = slotIds[idx];
+      let chosen = results[idx];
+      const prev = byId.get(prevTargets.get(slotId));
+      if (prev && !claimed.has(prev.p.id)) {
+        const budgetIfSwap = chosen ? budget + chosen.cost : budget;
+        const prevAffordable = prev.cost <= budgetIfSwap;
+        const freshIsFullTierBetter = chosen && chosen.p.tier < prev.p.tier;
+        if (prevAffordable && !freshIsFullTierBetter) {
+          if (chosen) { claimed.delete(chosen.p.id); budget += chosen.cost; }
+          chosen = prev;
+          claimed.add(prev.p.id);
+          budget -= prev.cost;
+        }
+      }
+      if (chosen) starterMap.set(slotId, chosen.p.id);
+      return {
+        slot, slotId, target: chosen ? chosen.p : null,
+        value: chosen ? chosen.value : 0, cost: chosen ? chosen.cost : 0,
+      };
+    });
+
+    const filledRows = assigned.slots.filter((s) => s.pick).map((s) => ({
+      slot: s.slot, target: playerById(s.pick.pid), cost: s.pick.price, drafted: true,
+    }));
+
+    // Same 9 slots, but in original draft-order (QB, RB, RB, WR...) rather
+    // than filled-then-open, for a display that reads like a roster.
+    const openByLabel = {};
+    openRows.forEach((r) => (openByLabel[r.slot] = openByLabel[r.slot] || []).push(r));
+    const starterRows = assigned.slots.map((s) => {
+      if (s.pick) return { slot: s.slot, target: playerById(s.pick.pid), cost: s.pick.price, drafted: true };
+      const r = (openByLabel[s.slot] || []).shift();
+      return r ? { ...r, drafted: false } : { slot: s.slot, target: null, cost: 0, value: 0, drafted: false };
+    });
+
+    // Bench: reuse the existing bench-target scoring (handcuff/upside/bye/
+    // scarcity), never the points objective - bench production scores zero.
+    const benchSpotsTotal = benchSpotsLeft(i);
+    const benchFilledRows = assigned.benched.map((pk) => ({
+      target: playerById(pk.pid), cost: pk.price, drafted: true,
+    }));
+    const benchOpenCount = Math.max(0, benchSpotsTotal - benchFilledRows.length);
+    const benchOpenRows = i === state.settings.myTeam
+      ? Array.from(benchMap().values())
+        .filter((b) => !claimed.has(b.p.id))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, benchOpenCount)
+        .map((b) => ({ target: b.p, value: b.score, cost: b.late, cuffFor: b.cuffFor }))
+      : [];
+
+    const plan = {
+      teamIdx: i, starterMap, openRows, filledRows, starterRows,
+      benchFilledRows, benchOpenRows, benchReserve, budgetLeftAfter: budget,
+    };
+    planCache = { key, plan };
+    return plan;
   }
 
   /** Highest bid that still leaves a complete, startable lineup. */
@@ -766,7 +1176,7 @@
       found = {
         id: `x${state.players.length}-${Date.now()}`,
         n: name, pos: pos || '?', tm: tm || '', tier: 9, v: 1,
-        target: false, draftedBy: null, price: 0,
+        target: false, caution: false, draftedBy: null, price: 0,
       };
       state.players.push(found);
     }
@@ -799,9 +1209,11 @@
     renderNomHelper();
     renderLog();
     renderMyTeam();
+    renderPlan();
     renderParSheet();
     renderTeams();
     renderVegas();
+    renderValueBoard();
     renderWinners();
     renderValueTab();
   }
@@ -945,6 +1357,7 @@
           : `<span class="veg flat" title="${tip}">≈</span>`;
         return `<div class="p-row${drafted ? ' drafted' : ''}" data-pid="${p.id}">
           <span class="pos-chip pos-${p.pos}">${p.pos === 'DST' ? 'D' : p.pos}</span>
+          <span class="p-name">${p.target ? '<span class="star">⭐</span> ' : ''}${p.caution ? '<span class="shaky" title="On your caution list">🚧</span> ' : ''}${p.n}<span class="tm">${p.tm}</span></span>
           <span class="p-name">${p.target ? '<span class="star">⭐</span> ' : ''}${p.n}<span class="tm">${p.tm}</span></span>
           <span class="p-val">$${anchorValue(p)}</span>
           <span class="p-adj">${drafted ? '' : `$${adj}`}</span>
@@ -1042,6 +1455,28 @@
       }
     }
 
+    // 4b. Trade value: doesn't fill YOUR need, but several rivals are weak at
+    // his position - a signal to grab draft-day only (this app has no
+    // post-draft trade screen), separate from the plan's own targets.
+    const tradeCandidates = undrafted()
+      .filter((p) => p.pos !== 'K' && p.pos !== 'DST'
+        && !myNeeds.includes(p.pos) && !(FLEX_POS.includes(p.pos) && myNeeds.includes('FLX')))
+      .map((p) => ({ p, tv: tradeValue(p) }))
+      .filter((x) => x.tv.field > 0 && x.tv.weak >= Math.max(2, Math.ceil(x.tv.field * 0.4)) && x.p.v >= 8)
+      .sort((a, b) => b.tv.weak - a.tv.weak)
+      .slice(0, 3);
+    if (tradeCandidates.length && mySpots > 2) {
+      groups.push(`<div class="nom-group"><h4>💱 Trade value — other teams are weak here</h4>${tradeCandidates.map((x) => item(x.p, `${x.tv.weak} of ${x.tv.field} rivals need ${x.p.pos}`)).join('')}</div>`);
+    }
+
+    // 4c. Caution list — good decoy bait; never removed from the board, just
+    // flagged, so it can surface here regardless of whether he'd also fill
+    // one of your own needs.
+    const caution = cautionList().slice(0, 3);
+    if (caution.length && mySpots > 2) {
+      groups.push(`<div class="nom-group drain"><h4>🚧 Caution list — good decoys</h4>${caution.map((x) => item(x.p, x.reasons.join(' · '))).join('')}</div>`);
+    }
+
     // 5. Punt nominations (endgame)
     if (mySpots <= Math.max(4, state.settings.rosterSize * 0.25)) {
       const punts = undrafted().filter((p) => (p.pos === 'K' || p.pos === 'DST')).sort((a, b) => a.v - b.v).slice(0, 4);
@@ -1078,8 +1513,9 @@
   function renderMyTeam() {
     const me = state.settings.myTeam;
     const el = $('#tab-myteam');
+    const bank = valueBank(me);
     const slots = [];
-    for (const pos of ['QB', 'RB', 'RB', 'WR', 'WR', 'TE', 'FLX', 'FLX', 'K', 'DST']) slots.push({ pos, pick: null });
+    for (const pos of ['QB', 'RB', 'RB', 'WR', 'WR', 'TE', 'FLX', 'K', 'DST']) slots.push({ pos, pick: null });
     const bench = state.settings.rosterSize - slots.length;
     for (let i = 0; i < bench; i++) slots.push({ pos: 'BN', pick: null });
 
@@ -1097,7 +1533,7 @@
 
     // Starting-lineup production: the only points that count.
     let starterPts = 0, ptsKnown = 0;
-    const STARTING = 10;
+    const STARTING = 9;
     slots.slice(0, STARTING).forEach((s) => {
       if (!s.pick) return;
       const w = winnerFor(s.pick.p);
@@ -1120,11 +1556,99 @@
         <span>Spent <b>$${state.teams[me].spent}</b></span>
         <span>Left <b>$${teamRemaining(me)}</b></span>
         <span>Max bid <b>$${teamMaxBid(me)}</b></span>
+        <span>Value banked <b class="${bank >= 0 ? 'good' : 'bad'}">${bank >= 0 ? '+' : ''}$${bank}</b></span>
       </div>
+      <p class="muted">Value banked is what buying under analyst+Vegas worth has earned you so far
+      — spend it as license to go over the odds the next time a real bidding war breaks out.</p>
       ${ptsKnown ? `<div class="lineup-strength">
         <span>Projected <b>starting</b> points</span><b>${Math.round(starterPts)}</b>
-        <div class="muted">From ${ptsKnown} of 10 starting slots. Bench production is excluded — it scores you nothing.</div>
+        <div class="muted">From ${ptsKnown} of ${STARTING} starting slots. Bench production is excluded — it scores you nothing.</div>
       </div>` : ''}`;
+  }
+
+  /** Live full-roster plan tab: every slot, drafted or targeted, in draft order. */
+  function renderPlan() {
+    const el = $('#tab-plan');
+    if (!el) return;
+    const me = state.settings.myTeam;
+    const plan = draftPlan(me);
+
+    const slotLabel = (s) => (s === 'DST' ? 'D/ST' : s === 'FLX' ? 'FLEX' : s);
+
+    const row = (r) => {
+      const p = r.target;
+      if (!p) {
+        return `<div class="vg-item" style="cursor:default">
+          <span class="pos-chip">${slotLabel(r.slot)}</span>
+          <span class="fill muted">nothing affordable left for this slot</span>
+          <span class="arank"></span><span class="vrank"></span><span class="edge"></span><span class="mine"></span>
+        </div>`;
+      }
+      const ptsTxt = r.value ? `${Math.round(r.value)}p` : '';
+      const cuffTip = r.cuffFor ? `handcuffs ${r.cuffFor} · ` : '';
+      const fc = !r.drafted && p.pos !== 'K' && p.pos !== 'DST' ? tierForecast(p.pos, p.tier) : null;
+      const fcBadge = fc
+        ? `<span class="edge ${fc.likely ? 'up' : 'down'}">${Math.round(fc.survivalPct * 100)}%</span>`
+        : '<span class="edge"></span>';
+      const fcTip = fc
+        ? `Tier ${fc.tier} ${fc.pos}: ${fc.remaining} left, ~${fc.projectedGone} likely bought before your next 2-3 turns through the room · `
+        : '';
+      const cst = !r.drafted ? contestedness(p) : null;
+      const cstIcon = cst ? (cst.level === 'low' ? ' 🧊' : cst.level === 'high' ? ' 🔥' : '') : '';
+      const cstTip = cst
+        ? `${cst.rivals} of ${cst.field} rivals both need and can afford him — ${cst.level === 'low' ? 'uncontested, safe to nominate yourself' : cst.level === 'high' ? 'contested, expect a bidding war' : 'some competition'}`
+        : '';
+      return `<div class="vg-item" data-pid="${p.id}" title="${cuffTip}${fcTip}${cstTip}">
+        <span class="pos-chip pos-${p.pos}">${p.pos === 'DST' ? 'D' : p.pos}</span>
+        <span class="fill"><b>${slotLabel(r.slot || p.pos)}</b> — ${p.target ? '<span class="star">⭐</span> ' : ''}${p.n}${r.cuffFor ? ' <span class="cuff">🔗</span>' : ''}${cstIcon} <span class="muted">${p.tm}</span></span>
+        <span class="arank">${ptsTxt}</span>
+        <span class="vrank">$${r.cost}</span>
+        ${fcBadge}
+        <span class="mine${r.drafted ? '' : ' up'}">${r.drafted ? 'drafted' : 'plan'}</span>
+      </div>`;
+    };
+
+    const starterPtsPlanned = plan.starterRows.reduce((s, r) => s + (r.value || 0), 0);
+    const benchRows = [...plan.benchFilledRows, ...plan.benchOpenRows];
+    const run = positionalRun();
+    const archetype = archetypeRead();
+    const stacks = stackWarnings(me);
+
+    el.innerHTML = `
+      <div class="panel-note">
+        <b>🧩 Draft Plan — your best full roster from here</b>
+        <div class="muted">Every slot, drafted or targeted, solved fresh after every pick in the room
+        — not just yours. Ranked by points above a starter, priced at what he'll actually cost,
+        inside your remaining budget. A slot keeps its target unless a fresh solve finds someone a
+        full tier better, so this won't reshuffle on you for no reason. K/DST stay cheap endgame
+        picks on purpose. <b>Tier %</b> is how likely his tier still has survivors after your next
+        2-3 turns through the room — a forecast by tier, never a bet on a specific name, since
+        nomination order is random. Hover a row for the numbers behind it.</div>
+      </div>
+      ${run ? `<div class="bp-alert">🏃 <b>${run.pos} run</b> — ${run.n} of the last ${run.windowSize}
+        picks were ${run.pos} (${Math.round(run.ratio * 100 - 100)}% ahead of normal pace).
+        Prices there are inflated right now; either sit it out this cycle or use the room being
+        distracted to nominate a position it's ignoring.</div>` : ''}
+      ${archetype ? `<p class="muted">📐 <b>Room read: ${archetype.lean}.</b> ${archetype.why}</p>` : ''}
+      ${stacks.length ? stacks.map((s) => `<p class="muted">⚠️ <b>Stack risk</b> — ${s.names.join(', ')}
+        ${s.kind === 'team' ? `all play for ${s.label}` : `all share a bye in ${s.label}`}. Not a block,
+        just something to weigh — one bad week/injury news cycle touches ${s.names.length} of your
+        picks at once.</p>`).join('') : ''}
+      <div class="par-summary">
+        <span>Starter budget <b>$${Math.max(0, teamRemaining(me) - plan.benchReserve)}</b></span>
+        <span>Bench reserve <b>$${plan.benchReserve}</b></span>
+        <span>Planned pts <b>${Math.round(starterPtsPlanned)}</b></span>
+      </div>
+      <div class="vg-head"><span></span><span>Slot / player</span><span>Pts</span><span>Cost</span><span>Tier %</span><span>Status</span></div>
+      ${plan.starterRows.map(row).join('')}
+      <h4 class="vg-sec">🪑 Bench — ${plan.benchOpenRows.length} planned, ${plan.benchFilledRows.length} drafted</h4>
+      ${benchRows.length ? benchRows.map(row).join('') : '<div class="muted">No bench targets clear your war chest yet.</div>'}
+      <p class="muted">Click any planned player to draft him directly. Star (⭐) a slot's target from
+      his Edit Value/Tier panel to protect his expected cost as that slot's budget reserve, so early
+      bidding elsewhere can't quietly price him out later.</p>`;
+
+    $$('#tab-plan .vg-item[data-pid]').forEach((n) =>
+      n.addEventListener('click', () => openDraftModal(n.dataset.pid)));
   }
 
   function renderParSheet() {
@@ -1572,11 +2096,69 @@
           <span class="cons">${b.bye || '—'}</span>
           <span class="paybox"><b>~$${b.late}</b><em>mkt $${b.market}</em></span>
         </div>`).join('')}
-      <p class="muted">🔗 handcuffs someone you already own. <b>~$</b> is what he should cost once
+      <p class="muted">🔗 handcuffs a real starter somewhere in the league — injuries don't check who
+      owns whom, so these aren't limited to your own roster. <b>~$</b> is what he should cost once
       the room's money dries up. ${waivers === 'active'
         ? 'Your league streams easily, so these are weighted toward handcuffs and breakout upside — the two things waivers can\'t replace.'
         : 'Weighted for a league where waivers won\'t bail you out.'}
       ${state.byes ? '' : 'Bye column is empty until you fetch bye weeks (⚙︎ → Fetch bye weeks).'}</p>`;
+  }
+
+  /**
+   * Value board — the room's nomination pace, translated into worth. Ranked
+   * purely by anchorValue (analyst board blended with the Vegas books), never
+   * by what anyone is bidding, and grouped into blocks the size of the league
+   * so each block reads as "who's still around after one more trip through
+   * the nomination order."
+   */
+  function renderValueBoard() {
+    const el = $('#tab-value');
+    if (!el) return;
+    const infl = inflation();
+    const teams = state.settings.teams || 12;
+
+    const pool = undrafted()
+      .filter((p) => p.pos !== 'K' && p.pos !== 'DST')
+      .map((p) => ({ p, worth: anchorValue(p), market: adjValue(p, infl), fz: farazFor(p) }))
+      .sort((a, b) => b.worth - a.worth);
+
+    const row = (x) => {
+      const edge = valueEdge(x.p, infl);
+      const vd = x.fz ? farazVerdict(x.fz) : null;
+      const badge = vd && vd.kind !== 'flat'
+        ? `<span class="veg ${vd.kind === 'buy' ? 'up' : 'down'}${vd.strength === 'strong' ? ' strong' : ''}">${vd.kind === 'buy' ? '▲' : '▼'}${Math.abs(x.fz.gap)}</span>`
+        : '<span class="veg flat">—</span>';
+      return `<div class="vg-item" data-pid="${x.p.id}">
+        <span class="pos-chip pos-${x.p.pos}">${x.p.pos}</span>
+        <span class="fill">${x.p.target ? '<span class="star">⭐</span> ' : ''}${x.p.n} <span class="muted">${x.p.tm}</span></span>
+        <span class="arank">$${x.worth}</span>
+        <span class="vrank">$${x.market}</span>
+        <span class="edge ${edge > 0 ? 'up' : edge < 0 ? 'down' : ''}">${edge > 0 ? '+' : ''}${edge}</span>
+        <span class="mine">${badge}</span>
+      </div>`;
+    };
+
+    const blocks = [];
+    for (let i = 0; i < pool.length; i += teams) blocks.push(pool.slice(i, i + teams));
+
+    el.innerHTML = `
+      <div class="panel-note">
+        <b>📦 Value board — one nomination cycle at a time</b>
+        <div class="muted">Ranked purely by <b>worth</b> (the analyst board blended with the Vegas
+        books) — never by what the room is bidding. Grouped in blocks of ${teams}, one full trip
+        through the nomination order in a ${teams}-team room, so you can see who's still on the
+        table this cycle.</div>
+      </div>
+      ${blocks.map((block, bi) => `
+        <h4 class="vg-sec">Block ${bi + 1} <span class="muted">— players ${bi * teams + 1}–${bi * teams + block.length}</span></h4>
+        <div class="vg-head"><span></span><span>Player</span><span>Worth</span><span>Mkt</span><span>Edge</span><span>Faraz</span></div>
+        ${block.map(row).join('')}
+      `).join('') || '<div class="log-empty">Board is empty — every skill player is drafted.</div>'}
+      <p class="muted"><b>Worth</b> is the analyst+Vegas anchor; <b>Mkt</b> is what he'll actually
+      cost at current room inflation. <b>Edge</b> is the gap — positive means he's underpriced right
+      now.</p>`;
+
+    $$('#tab-value .vg-item').forEach((n) => n.addEventListener('click', () => openDraftModal(n.dataset.pid)));
   }
 
   function renderWinners() {
@@ -1897,6 +2479,7 @@
     $('#editValue').value = p.v;
     $('#editTier').value = p.tier;
     $('#editTarget').checked = !!p.target;
+    $('#editCaution').checked = !!p.caution;
     hide('#modalDraft');
     show('#modalEdit');
   }
@@ -1907,6 +2490,7 @@
       p.v = Math.max(0, Number($('#editValue').value) || 0);
       p.tier = Math.max(1, Number($('#editTier').value) || 1);
       p.target = $('#editTarget').checked;
+      p.caution = $('#editCaution').checked;
       save();
     }
     hide('#modalEdit');
@@ -2013,7 +2597,10 @@
 
   /**
    * Bye weeks come from ESPN's public pro-team schedule, which needs no auth —
-   * so Sleeper drafters get them too. Pulled automatically on connect.
+   * so Sleeper drafters get them too. Pulled automatically on connect. The
+   * fantasy-playoff-week (15/16/17) opponent schedule rides along on the same
+   * fetch — best-effort, since ESPN doesn't document that field's shape; a
+   * failure there is silent and just leaves the playoff read unavailable.
    */
   async function fetchByes(interactive) {
     const year = state.conn.year
@@ -2032,6 +2619,11 @@
       if (status) status.textContent = String(err.message || err);
       if (interactive) console.warn('bye fetch failed:', err);
     }
+    try {
+      const r2 = await fetch(`/api/playoff-schedule?year=${encodeURIComponent(year)}`);
+      const s = await r2.json();
+      if (r2.ok) { state.playoffSchedule = s; save(); renderAll(); }
+    } catch (_) { /* best-effort — playoff read just stays unavailable */ }
   }
 
   function connError(msg) {
