@@ -707,12 +707,60 @@
       const covers = starters.find((m) => m.tm === p.tm && m.pos === p.pos && anchorValue(m) > anchorValue(p));
       if (covers) {
         // Losing a bell-cow back hands his replacement the entire workload;
-        // the same is far less true at receiver.
-        const leverage = p.pos === 'RB' ? 1 : p.pos === 'TE' ? 0.6 : 0.5;
+        // the same is far less true at receiver, and essentially never true
+        // at QB — a backup rarely inherits real value the way an RB2 does,
+        // and streaming one off waivers is normally fine.
+        const LEVERAGE = { RB: 1, TE: 0.6, WR: 0.5, QB: 0 };
+        const leverage = LEVERAGE[p.pos] ?? 0.5;
         out.set(p.id, { covers, leverage });
       }
     }
     return out;
+  }
+
+  /**
+   * QB-only: the moment you already own a QB, a bench candidate who'd become
+   * your 2nd takes an immediate real hit, compounding for a 3rd+. RB/WR/TE
+   * are deliberately excluded — best player available governs there, since a
+   * lower-ranked player beating expectations is common enough not to
+   * algorithmically suppress deep bench value at those positions.
+   */
+  function qbDepthFactor(ownedQB) {
+    const wouldOwn = ownedQB + 1;
+    if (wouldOwn <= 1) return 1; // this candidate would be your only QB
+    const extra = wouldOwn - 1;
+    return Math.max(0.15, Math.pow(0.45, extra)); // 2nd QB: ×0.45, 3rd: ×0.20, floor 0.15
+  }
+
+  /**
+   * QB-only: how much of the league is actually thin at QB right now, as a
+   * 0..0.5 "rescue" factor that can pull a deep QB's depth discount back up.
+   * Reuses tradeValue's rival scan. A QB nobody else wants gets zero rescue
+   * (falls straight through to qbDepthFactor, unchanged); a QB that blocks a
+   * meaningfully QB-needy chunk of the room lands around "not-so-good bench
+   * player" territory — never fully restored to 1.0, since he's still not
+   * your starter.
+   */
+  function qbTradeRescue(weak, field) {
+    const RESCUE_CAP = 0.5;
+    if (field <= 0) return 0;
+    return RESCUE_CAP * (weak / field);
+  }
+
+  // Tier-5-and-above in the default board - the cleanest split between real
+  // (if bad) NFL starters and true backups the app's data can support.
+  const QB_STARTER_MIN_VALUE = 2;
+
+  function qbDepthWithRescue(ownedQB, p) {
+    const base = qbDepthFactor(ownedQB);
+    const wouldOwn = ownedQB + 1;
+    // Only one extra QB is ever worth blocking with, and only if he's a real
+    // starter - a true backup has no block/trade value no matter how many
+    // rivals technically "need" QB.
+    const eligibleForRescue = wouldOwn === 2 && p.v >= QB_STARTER_MIN_VALUE;
+    if (!eligibleForRescue) return base;
+    const { weak, field } = tradeValue(p);
+    return Math.max(base, qbTradeRescue(weak, field));
   }
 
   const byeFor = (p) => (state.byes && p.tm ? state.byes[p.tm] || null : null);
@@ -729,10 +777,13 @@
     const cuffs = handcuffSet();
     const waivers = state.settings.waivers || 'active';
 
-    // Bye weeks my current starters are off, per position.
+    // Bye weeks my current starters are off, per position, and how many QBs
+    // I already own (the only position where a depth discount applies).
     const starterByes = {};
+    let ownedQB = 0;
     for (const pk of picksWithPos(me)) {
       const p = playerById(pk.pid);
+      if (p && p.pos === 'QB') ownedQB += 1;
       const b = p && byeFor(p);
       if (b) (starterByes[p.pos] = starterByes[p.pos] || []).push(b);
     }
@@ -783,7 +834,8 @@
         bye: r.byeFit,
         scarcity: r.scarcity,
       };
-      map.set(r.p.id, { ...r, parts, score: LineupEngine.benchScore(parts, waivers) });
+      const depth = r.p.pos === 'QB' ? qbDepthWithRescue(ownedQB, r.p) : 1;
+      map.set(r.p.id, { ...r, parts, score: LineupEngine.benchScore(parts, waivers) * depth });
     }
     benchCache = { key, map };
     return map;
