@@ -54,7 +54,7 @@ alert the moment the window opens, and the opposite one when 70%+ of the room ca
 
 In a streaming league generic depth is free — you can get that off waivers. What waivers *cannot*
 hand you is a handcuff to a real starter or a breakout before he breaks out. So the bench score
-weights four factors, tilted by your **waiver setting** (⚙︎ → Waiver wire):
+weights these factors, tilted by your **waiver setting** (⚙︎ → Waiver wire):
 
 | Factor | Why |
 | --- | --- |
@@ -62,6 +62,14 @@ weights four factors, tilted by your **waiver setting** (⚙︎ → Waiver wire)
 | **Upside vs. cost** | Production per dollar at what he'll *actually clear for*, not sheet value |
 | **Bye coverage** | Penalised if he shares a bye with your starter at that position, rewarded if he covers it |
 | **Scarcity insurance** | Depth where the pool is drying up — dialled down in streaming leagues, up in locked ones |
+| **QB depth discount** | Only one QB starts, so a 2nd is cut to 45% and a 3rd to 20% the moment you own one. RB/WR/TE are deliberately left alone — a lower-ranked back beating expectations is common enough that suppressing deep bench value there would cost you more than it saves |
+
+**The one exception at QB.** If a rival genuinely needs the position, a startable quarterback is
+worth owning even though he'll never start for you — it denies a competitor and sets up a trade.
+The app reuses its rival-need scan to pull that QB's discount back up, but with hard limits: only
+**one** extra QB ever qualifies (a 3rd never does, however badly the room needs one), he must be a
+real current starter rather than a clipboard-holder, and the rescue is capped so he can never
+out-score a genuinely useful RB/WR/TE bench buy.
 
 Bye weeks come from ESPN's public pro-team schedule (no auth, so Sleeper drafters get them too).
 They're pulled automatically when you connect a draft, or on demand via ⚙︎ → **Fetch bye weeks**.
@@ -279,6 +287,27 @@ npm start
 ```
 
 Requires Node 18+.
+
+### Configuration (optional)
+
+Everything works with no configuration at all. The one setting worth knowing is the Odds API key,
+which can live in the server instead of your browser:
+
+```bash
+cp .env.example .env
+# then edit .env:
+#   ODDS_API_KEY=your_key_from_the-odds-api.com
+npm start          # .env is read at startup, so restart after editing
+```
+
+`.env` is git-ignored and never committed. A real environment variable wins over the file, so
+`ODDS_API_KEY=… npm start` overrides it for one run. Check it took at
+`http://localhost:3000/api/odds/config` — you want `{"serverKey":true}`, and the Vegas tab will
+say the key field can be left blank.
+
+You don't need this. Pasting the key into the Vegas tab works identically and is remembered in
+your browser between sessions; the `.env` route exists so the key never has to touch the browser
+at all, which matters for a shared or deployed server rather than your own laptop.
 
 ## Connecting a live draft
 
