@@ -233,6 +233,41 @@ window.VegasEngine = (function () {
   }
 
   // ---------------------------------------------------------------------------
+  // Strength of schedule (analyst-sourced, pasted in - no free live API for this)
+  // ---------------------------------------------------------------------------
+  const SOS_POS_ALIASES = {
+    QB: 'QB', RB: 'RB', WR: 'WR', TE: 'TE', K: 'K', PK: 'K',
+    DST: 'DST', DEF: 'DST', DEFENSE: 'DST',
+  };
+
+  /**
+   * Parses per-position season SOS. Tolerant of token order/format - analyst
+   * sites format this every which way. Accepts lines like:
+   *   "RB BUF 3" / "BUF RB 3" / "RB, BUF, 3" / "3. RB BUF" / "BUF\tDEF\t9"
+   * One mixed paste covering every position. Unrecognized/partial lines are
+   * silently skipped (never throws) - returns counts so the caller can report
+   * "N rows read, M skipped" without failing the whole import.
+   */
+  function parseSOS(text) {
+    const out = { QB: {}, RB: {}, WR: {}, TE: {}, K: {}, DST: {} };
+    let matched = 0, skipped = 0;
+    for (const raw of String(text).trim().split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line) continue;
+      const tokens = line.split(/[\s,]+/).filter(Boolean);
+      let pos = null, team = null, rank = null;
+      for (const tok of tokens) {
+        const norm = tok.toUpperCase().replace(/[^A-Z]/g, '');
+        if (!pos && SOS_POS_ALIASES[norm]) { pos = SOS_POS_ALIASES[norm]; continue; }
+        if (rank === null && /^\d+(?:\.\d+)?$/.test(tok)) { rank = Number(tok); continue; }
+        if (!team && /^[A-Za-z]{2,4}$/.test(tok)) { team = tok.toUpperCase(); continue; }
+      }
+      if (pos && team && rank !== null) { out[pos][team] = rank; matched++; } else { skipped++; }
+    }
+    return { sos: out, matched, skipped };
+  }
+
+  // ---------------------------------------------------------------------------
   // Book selection (Strategy by Faraz: trust a chosen top-3, not the whole field)
   // ---------------------------------------------------------------------------
   /** Books preferred by default, in order, when the user hasn't picked. */
@@ -496,6 +531,7 @@ window.VegasEngine = (function () {
     parseCsv,
     parseWinTotals,
     parseRanks,
+    parseSOS,
     extrapolateWeekProps,
     impliedProb,
     defaultBooks,
