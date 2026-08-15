@@ -61,6 +61,7 @@
       // so this has no effect until you load real lines or opt into the sample) —
       // worth is anchored in the analysts AND the books, never in room bidding.
       blend: 50,
+      blend: 50,            // % weight of the books in a player's anchored worth
       lines: null,          // null => use the bundled sample
       raw: null,            // per-book payload, so book selection can change offline
       books: [],            // available books from the last fetch
@@ -262,6 +263,7 @@
    * what was actually paid. A positive bank is ammunition — it's how much you
    * can go over the odds on a player you truly want in a bidding war and
    * still be net ahead across your whole roster.
+   * can go over the odds on a player you truly want and still be ahead.
    */
   function valueBank(teamIdx) {
     let bank = 0;
@@ -1194,7 +1196,20 @@
     const elite = w && w.pct >= 0.75;
     const ceilingForStretch = elite ? safe : Math.min(safe, Math.max(competitive, market));
     const suggested = Math.max(1, Math.min(ceilingForStretch, cap.suggested));
-    return { market, safe, competitive, suggested, premium: cap.premium, winner: w };
+
+    // Surplus already banked is real money you can put on top in a bidding war
+    // without ending up behind on value.
+    // Paying his anchored worth plus the surplus you've banked leaves your
+    // cumulative value exactly level — that, not the sheet price, is the true
+    // "how far can I go and still be ahead" number in a bidding war.
+    const bank = Math.max(0, valueBank(state.settings.myTeam));
+    const anchor = anchorValue(p);
+    const withBank = Math.max(1, Math.min(safe, anchor + bank));
+
+    return {
+      market, safe, competitive, suggested, anchor, bank, withBank,
+      premium: cap.premium, winner: w,
+    };
   }
 
   // ---------------------------------------------------------------------------
@@ -1294,6 +1309,13 @@
       ? `Unfilled: ${open.join(', ')} — about $${reserve} to fill them all with startable players`
       : 'Starting lineup complete';
     $('#statInflation').textContent = `${inflation().toFixed(2)}×`;
+    const bank = valueBank(me);
+    const bankEl = $('#statBank');
+    bankEl.textContent = `${bank >= 0 ? '+' : '−'}$${Math.abs(bank)}`;
+    bankEl.style.color = bank > 0 ? 'var(--accent)' : bank < 0 ? 'var(--danger)' : '';
+    bankEl.title = bank >= 0
+      ? `You've bought $${bank} of anchored value below cost. That's how far over the odds you can go on a player you want and still be ahead.`
+      : `You've paid $${Math.abs(bank)} above anchored value so far. Make it back on your next buys.`;
     const h = hammerIndex();
     $('#statHammer').textContent = h >= 0 ? `${state.teams[h].name} ($${teamRemaining(h)})` : '—';
   }
@@ -1418,6 +1440,8 @@
         return `<div class="p-row${drafted ? ' drafted' : ''}" data-pid="${p.id}">
           <span class="pos-chip pos-${p.pos}">${p.pos === 'DST' ? 'D' : p.pos}</span>
           <span class="p-name">${p.target ? '<span class="star">⭐</span> ' : ''}${p.caution ? '<span class="shaky" title="On your caution list">🚧</span> ' : ''}${easyBadge}${p.n}<span class="tm">${p.tm}</span></span>
+          <span class="p-name">${p.target ? '<span class="star">⭐</span> ' : ''}${p.caution ? '<span class="shaky" title="On your caution list">🚧</span> ' : ''}${p.n}<span class="tm">${p.tm}</span></span>
+          <span class="p-name">${p.target ? '<span class="star">⭐</span> ' : ''}${p.n}<span class="tm">${p.tm}</span></span>
           <span class="p-val">$${anchorValue(p)}</span>
           <span class="p-adj">${drafted ? '' : `$${adj}`}</span>
           <span class="p-veg">${veg}</span>
@@ -1804,11 +1828,16 @@
     const banner = sample
       ? `<div class="vg-banner ${v.allowSample ? 'warn' : 'stop'}">
            <b>⚠️ Sample data — these are NOT real sportsbook lines.</b>
-           <div class="muted">They exist so you can see how the tool works. Fetch or import real
-           lines before draft day.</div>
-           ${v.allowSample
-             ? '<button id="btnVgDisallow" class="btn btn-sm btn-ghost">Hide sample edges</button>'
-             : '<button id="btnVgAllow" class="btn btn-sm btn-ghost">Show sample edges anyway</button>'}
+           <div class="muted">Having an API key isn't enough — lines have to be pulled. ${
+             serverHasOddsKey
+               ? 'Your server key is set, so this is one click.'
+               : 'Add your Odds API key first, then fetch.'}</div>
+           <div class="vg-banner-actions">
+             <button id="btnVgFetchNow" class="btn btn-sm btn-primary">⬇ Fetch live lines now</button>
+             ${v.allowSample
+               ? '<button id="btnVgDisallow" class="btn btn-sm btn-ghost">Hide sample edges</button>'
+               : '<button id="btnVgAllow" class="btn btn-sm btn-ghost">Show sample edges anyway</button>'}
+           </div>
          </div>`
       : `<div class="vg-banner ok"><b>✓ ${v.source === 'odds-api' ? 'Live Odds API lines' : 'Imported lines'}</b>
            <div class="muted">${lineCount} players · ${v.asOf}${v.meta?.events ? ` · ${v.meta.events} games sampled` : ''}</div></div>`;
@@ -1845,11 +1874,12 @@
         </select>
       </div>
       <div class="vg-row">
-        <label>Blend into my values <b>${v.blend}%</b></label>
+        <label>Books' weight in anchored value <b>${v.blend}%</b></label>
         <input id="vgBlend" type="range" min="0" max="100" step="5" value="${v.blend}" />
       </div>
-      <p class="muted">At 0% your own numbers drive every price and Vegas is pure signal. Dial it up
-      to let the books move your sheet — 25–40% is a sane range.</p>`;
+      <p class="muted">A player's <b>worth</b> is anchored in the analyst board and the Vegas books —
+      never in what the room is bidding. This sets how much of that anchor comes from the books.
+      At 0% it's purely the analysts; 50% weights them equally.</p>`;
 
     let body = '';
     if (!vegasActive()) {
@@ -1927,6 +1957,17 @@
     el.innerHTML = banner + controls + body;
 
     const bind = (sel, ev, fn) => { const n = $(sel); if (n) n.addEventListener(ev, fn); };
+    bind('#btnVgFetchNow', 'click', () => {
+      // Open the fetch panel so the result — success or failure — is visible,
+      // then run the same fetch the panel's own button runs.
+      $('#vegasMsg').classList.add('hidden');
+      $$('#vegTabs button').forEach((x) => x.classList.remove('active'));
+      $('#vegTabs button[data-vtab="fetch"]').classList.add('active');
+      $$('#modalVegas .ctab-body').forEach((x) => x.classList.add('hidden'));
+      show('#vtab-fetch');
+      show('#modalVegas');
+      vegasFetch();
+    });
     bind('#btnVgAllow', 'click', () => { state.vegas.allowSample = true; save(); renderAll(); });
     bind('#btnVgDisallow', 'click', () => { state.vegas.allowSample = false; save(); renderAll(); });
     bind('#btnVgOpen', 'click', () => { $('#vegasMsg').classList.add('hidden'); show('#modalVegas'); });
@@ -1983,6 +2024,80 @@
       <p class="muted bp-note ${mood.cls}">${mood.txt}</p>
       ${bench ? `<p class="muted">$${chest} is held back for ${bench} bench spot${bench > 1 ? 's' : ''} — not to buy depth, but so you can still win a bid when a good player falls late.</p>` : ''}
       ${lockout}`;
+  }
+
+
+
+  /**
+   * Key handcuffs, league-wide.
+   *
+   * A backup is worth owning because of the job he'd inherit, not because of
+   * whose roster the starter is on — injuries happen to every team. So this
+   * ranks every backup in the pool by the workload sitting in front of him,
+   * then checks that the analysts and the books actually back him: a name with
+   * no projection behind it is not a handcuff, it's a lottery ticket.
+   */
+  function contingencyBoard() {
+    const infl = inflation();
+    const byTeamPos = {};
+    for (const p of state.players) {
+      if (!p.tm || p.tm === 'FA') continue;
+      if (!['RB', 'WR', 'TE', 'QB'].includes(p.pos)) continue;
+      const k = `${p.tm}|${p.pos}`;
+      (byTeamPos[k] = byTeamPos[k] || []).push(p);
+    }
+    const mine = new Set(state.teams[state.settings.myTeam].picks.map((pk) => pk.pid));
+
+    const rows = [];
+    for (const [k, group] of Object.entries(byTeamPos)) {
+      if (group.length < 2) continue;
+      group.sort((a, b) => anchorValue(b) - anchorValue(a));
+      const starter = group[0];
+      const starterWorth = anchorValue(starter);
+      // Only a real workload is worth insuring.
+      if (starterWorth < 18) continue;
+      for (const backup of group.slice(1)) {
+        if (backup.draftedBy !== null) continue;
+        const w = winnerFor(backup);
+        const line = activeLines()[VegasEngine.normName(backup.n)];
+        const backed = !!(w && w.proj !== null) || backup.v >= 3;
+        // Position leverage: a lost bell-cow back hands over the whole job.
+        const leverage = backup.pos === 'RB' ? 1 : backup.pos === 'QB' ? 0.8
+          : backup.pos === 'TE' ? 0.6 : 0.45;
+        const price = adjValue(backup, infl);
+        rows.push({
+          p: backup, starter, starterWorth, leverage, price,
+          proj: w && w.proj !== null ? w.proj : null,
+          backed,
+          minesStarter: mine.has(starter.id),
+          // Value of the job he'd step into, per dollar he costs.
+          score: (starterWorth * leverage) / Math.max(1, price) * (backed ? 1 : 0.35)
+            * (line ? 1.15 : 1),
+        });
+      }
+    }
+    return rows.sort((a, b) => b.score - a.score);
+  }
+
+  function renderContingency() {
+    const rows = contingencyBoard().slice(0, 10);
+    if (!rows.length) return '';
+    return `
+      <h4 class="vg-sec">🚑 Key handcuffs — league-wide</h4>
+      <div class="win-head"><span></span><span>Backup</span><span>Inherits</span><span>Job $</span><span>Cost</span></div>
+      ${rows.map((r) => `
+        <div class="win-item bench-item" data-pid="${r.p.id}"
+             title="${r.p.n} sits behind ${r.starter.n} ($${r.starterWorth} of value). ${r.backed ? 'Analysts/books back him.' : 'Thin projection — speculative.'}">
+          <span class="pos-chip pos-${r.p.pos}">${r.p.pos}</span>
+          <span class="fill">${r.p.n}${r.minesStarter ? ' <span class="cuff">🔗</span>' : ''}${r.backed ? '' : ' <span class="shaky">?</span>'}</span>
+          <span class="fill muted">${r.starter.n}</span>
+          <span class="cons">$${r.starterWorth}</span>
+          <span class="paybox"><b>$${r.price}</b></span>
+        </div>`).join('')}
+      <p class="muted">Ranked by the workload waiting in front of them, not by whose roster the
+      starter is on — a torn ACL anywhere in the league makes one of these a starter.
+      🔗 backs up a player you own. <span class="shaky">?</span> means the analysts and books don't
+      support him yet, so he's speculation rather than insurance.</p>`;
   }
 
   /** Bench buys: insurance and upside that waivers can't hand you. */
@@ -2144,7 +2259,7 @@
       those slots goes unfilled.</p>
       <div class="win-head"><span></span><span>Player</span><span>Winner</span><span>Steady</span><span>Pay to</span></div>
       ${needed.map(row).join('') || '<div class="muted">No starters left to chase.</div>'}
-      ${renderBenchTargets()}
+      ${renderContingency()}
       ${anyEstimated ? '<p class="muted">⚠️ Some scores are estimated from your board values because no Vegas line covers that player — load lines for real consistency and availability numbers.</p>' : ''}
       <p class="muted"><b>$X</b> is the most you're justified paying; <b>mkt</b> is what he'd
       normally go for. The gap between them is your licensed overspend — deliberately small for
@@ -2167,9 +2282,59 @@
     el.classList.remove('hidden');
   }
 
+  /**
+   * The Odds API key, remembered between sessions.
+   *
+   * Kept in its own localStorage entry rather than in the draft state, so
+   * resetting a draft never wipes it. When the server has ODDS_API_KEY set the
+   * browser never needs to hold the key at all.
+   */
+  const ODDS_KEY_STORE = 'auction-war-room-odds-key';
+  const savedOddsKey = () => {
+    try { return localStorage.getItem(ODDS_KEY_STORE) || ''; } catch (_) { return ''; }
+  };
+  const rememberOddsKey = (k) => {
+    try {
+      if (k) localStorage.setItem(ODDS_KEY_STORE, k);
+      else localStorage.removeItem(ODDS_KEY_STORE);
+    } catch (_) { /* private browsing — the key just won't persist */ }
+  };
+
+  let serverHasOddsKey = false;
+
+  /** Fills the key field from storage and reports a server-held key. */
+  async function initOddsKey() {
+    const field = $('#vgKey');
+    if (field && !field.value) field.value = savedOddsKey();
+    try {
+      const r = await fetch('/api/odds/config');
+      if (!r.ok) return;
+      const b = await r.json();
+      serverHasOddsKey = !!b.serverKey;
+      // The first render ran before this resolved, so redraw the banner with
+      // the right guidance now that we know a server key exists.
+      if (serverHasOddsKey) renderVegas();
+      if (serverHasOddsKey && field) {
+        field.placeholder = 'using the key set on the server';
+        const note = $('#vgKeyNote');
+        if (note) {
+          note.textContent = 'The server has ODDS_API_KEY set, so you can leave this blank.';
+          note.classList.remove('hidden');
+        }
+      }
+    } catch (_) { /* offline — typed keys still work */ }
+  }
+
+  /** The key to send: blank is fine when the server holds one. */
+  function oddsKeyForRequest() {
+    const typed = ($('#vgKey').value || '').trim();
+    if (typed) rememberOddsKey(typed);
+    return typed;
+  }
+
   async function vegasTestKey() {
-    const key = $('#vgKey').value.trim();
-    if (!key) return vegasMsg('Enter your Odds API key first.', true);
+    const key = oddsKeyForRequest();
+    if (!key && !serverHasOddsKey) return vegasMsg('Enter your Odds API key first.', true);
     try {
       const r = await fetch(`/api/odds/status?key=${encodeURIComponent(key)}`);
       const b = await r.json();
@@ -2181,8 +2346,8 @@
   }
 
   async function vegasFetch() {
-    const key = $('#vgKey').value.trim();
-    if (!key) return vegasMsg('Enter your Odds API key first.', true);
+    const key = oddsKeyForRequest();
+    if (!key && !serverHasOddsKey) return vegasMsg('Enter your Odds API key first.', true);
     const expectedGames = Number($('#vgGames').value) || 16.2;
     const maxEvents = Number($('#vgMaxEvents').value) || 16;
     const btn = $('#btnVgFetch');
@@ -2341,10 +2506,16 @@
     el.innerHTML = `
       <div class="bg-tier ${tier.cls}">${tier.txt}</div>
       <div class="bg-nums">
+        <div><label>Worth</label><b class="bg-anchor">$${g.anchor}</b></div>
         <div><label>Market</label><b>$${g.market}</b></div>
         <div class="bg-go"><label>Pay up to</label><b>$${g.suggested}</b></div>
         <div><label>Hard ceiling</label><b>$${g.safe}</b></div>
       </div>
+      ${g.bank > 0 && g.withBank > g.suggested
+        ? `<div class="bg-bank">🏦 Banked <b>$${g.bank}</b> of value so far — worth $${g.anchor} plus
+             that surplus means you can go to <b>$${g.withBank}</b> in a bidding war and still be
+             level on value across the draft.</div>`
+        : ''}
       <div class="bg-meta muted">
         ${starter ? `Steps into your <b>${open.includes(p.pos) ? p.pos : 'FLEX'}</b> slot` : 'Would sit on your bench'}
         ${w && w.consistency !== null ? ` · ${pctTxt(w.consistency)} of his points are volume-based` : ''}
@@ -2752,4 +2923,5 @@
   wire();
   renderAll();
   startPolling();
+  initOddsKey();
 })();
