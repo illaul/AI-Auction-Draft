@@ -210,6 +210,7 @@
         <button data-vtab="fetch" class="active">Fetch live</button>
         <button data-vtab="import">Import / paste</button>
         <button data-vtab="ranks">Analyst ranks</button>
+        <button data-vtab="sos">Schedule (SOS)</button>
       </div>
 
       <div id="vtab-fetch" class="ctab-body">
@@ -269,6 +270,22 @@
           <button class="btn btn-ghost" data-close>Close</button>
           <button id="btnVgClearRanks" class="btn btn-ghost">Use my board values</button>
           <button id="btnVgImportRanks" class="btn btn-primary">Import ranks</button>
+        </div>
+      </div>
+      <div id="vtab-sos" class="ctab-body hidden">
+        <p class="muted">Paste per-position strength-of-schedule ranks from any analyst source —
+          one mixed list, any order/separator: <code>RB BUF 3</code>, <code>BUF, RB, 3</code>,
+          <code>DEF NYJ 30</code>. 1 = easiest schedule, 32 = hardest. Positions: QB, RB, WR, TE,
+          K, DEF/DST. Re-importing merges with what's already loaded — use Clear for a fresh
+          start.</p>
+        <div class="form-row">
+          <label>Schedule strength (SOS)</label>
+          <textarea id="vgSos" rows="10" placeholder="RB BUF 3&#10;WR KC 28&#10;DEF NYJ 30&#10;…"></textarea>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-ghost" data-close>Close</button>
+          <button id="btnVgClearSos" class="btn btn-ghost">Clear SOS data</button>
+          <button id="btnVgImportSos" class="btn btn-primary">Import SOS</button>
         </div>
       </div>
       <div id="vegasMsg" class="error hidden"></div>

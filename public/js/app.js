@@ -34,6 +34,7 @@
       settings: { teams, budget: 200, rosterSize: 16, myTeam: 0, waivers: 'active' },
       byes: null,
       playoffSchedule: null, // { "BUF": {"15":"KC","16":"NYJ","17":"MIA"}, ... }, best-effort
+      sos: null, // { QB: {BUF: 3, ...}, RB: {...}, ... } - analyst-pasted, 1=easiest, 32=hardest
       teams: Array.from({ length: teams }, (_, i) => ({ name: `Team ${i + 1}`, spent: 0, picks: [] })),
       players: DEFAULT_PLAYERS.map((p, i) => ({
         id: `p${i}`, n: p.n, pos: p.pos, tm: p.tm, tier: p.tier, v: p.v,
@@ -85,6 +86,7 @@
         if (!state.settings.waivers) state.settings.waivers = 'active';
         if (state.byes === undefined) state.byes = null;
         if (state.playoffSchedule === undefined) state.playoffSchedule = null;
+        if (state.sos === undefined) state.sos = null;
         for (const p of state.players) if (p.caution === undefined) p.caution = false;
         return;
       }
@@ -335,6 +337,22 @@
     if (!rows.length) return null;
     const toughCount = rows.filter((r) => r.tough).length;
     return { rows, toughCount, total: rows.length, bad: toughCount >= 2 };
+  }
+
+  /**
+   * Season-long analyst SOS read, per position. Independent of Vegas - this
+   * is analyst-sourced schedule-strength data, not derived from sportsbook
+   * lines, so unlike playoffRead it does NOT gate on vegasActive(). It only
+   * needs the user to have pasted SOS data and the player to have a team.
+   */
+  function sosRead(p) {
+    if (!state.sos || !p.tm || !p.pos) return null;
+    const posMap = state.sos[p.pos];
+    if (!posMap) return null;
+    const rank = posMap[p.tm];
+    if (rank === undefined) return null;
+    const total = Object.keys(posMap).length;
+    return { rank, total, easy: rank <= 8, tough: rank >= 25 };
   }
 
   function tierForecast(pos, tier) {
@@ -682,6 +700,8 @@
       if (market > worth * 1.15 && market - worth >= 3) reasons.push(`overpriced — mkt $${market} vs worth $${worth}`);
       const pr = playoffRead(p);
       if (pr && pr.bad) reasons.push(`tough playoff slate — wk ${pr.rows.filter((r) => r.tough).map((r) => r.week).join(', ')}`);
+      const sr = sosRead(p);
+      if (sr && sr.tough) reasons.push(`tough ${p.pos} schedule — SOS #${sr.rank} of ${sr.total}`);
       if (reasons.length) out.push({ p, reasons, market, worth });
     }
     return out.sort((a, b) => b.market - a.market);
@@ -719,27 +739,28 @@
   }
 
   /**
-   * QB-only: the moment you already own a QB, a bench candidate who'd become
-   * your 2nd takes an immediate real hit, compounding for a 3rd+. RB/WR/TE
-   * are deliberately excluded — best player available governs there, since a
-   * lower-ranked player beating expectations is common enough not to
-   * algorithmically suppress deep bench value at those positions.
+   * QB/TE-only ("onesie" positions - one starter slot each): the moment you
+   * already own one, a bench candidate who'd become your 2nd takes an
+   * immediate real hit, compounding for a 3rd+. RB/WR are deliberately
+   * excluded — best player available governs there, since a lower-ranked
+   * player beating expectations is common enough not to algorithmically
+   * suppress deep bench value at those positions.
    */
-  function qbDepthFactor(ownedQB) {
-    const wouldOwn = ownedQB + 1;
-    if (wouldOwn <= 1) return 1; // this candidate would be your only QB
+  function onesieDepthFactor(owned) {
+    const wouldOwn = owned + 1;
+    if (wouldOwn <= 1) return 1; // this candidate would be your only one
     const extra = wouldOwn - 1;
-    return Math.max(0.15, Math.pow(0.45, extra)); // 2nd QB: ×0.45, 3rd: ×0.20, floor 0.15
+    return Math.max(0.15, Math.pow(0.45, extra)); // 2nd: ×0.45, 3rd: ×0.20, floor 0.15
   }
 
   /**
-   * QB-only: how much of the league is actually thin at QB right now, as a
-   * 0..0.5 "rescue" factor that can pull a deep QB's depth discount back up.
-   * Reuses tradeValue's rival scan. A QB nobody else wants gets zero rescue
-   * (falls straight through to qbDepthFactor, unchanged); a QB that blocks a
-   * meaningfully QB-needy chunk of the room lands around "not-so-good bench
-   * player" territory — never fully restored to 1.0, since he's still not
-   * your starter.
+   * QB/TE-only: how much of the league is actually thin at this position
+   * right now, as a 0..0.5 "rescue" factor that can pull a deep bench
+   * candidate's depth discount back up. Reuses tradeValue's rival scan. A
+   * player nobody else wants gets zero rescue (falls straight through to
+   * onesieDepthFactor, unchanged); one that blocks a meaningfully needy
+   * chunk of the room lands around "not-so-good bench player" territory —
+   * never fully restored to 1.0, since he's still not your starter.
    */
   function qbTradeRescue(weak, field) {
     const RESCUE_CAP = 0.5;
@@ -748,16 +769,17 @@
   }
 
   // Tier-5-and-above in the default board - the cleanest split between real
-  // (if bad) NFL starters and true backups the app's data can support.
-  const QB_STARTER_MIN_VALUE = 2;
+  // (if bad) NFL starters and true backups the app's data can support, for
+  // both QB and TE.
+  const ONESIE_STARTER_MIN_VALUE = 2;
 
-  function qbDepthWithRescue(ownedQB, p) {
-    const base = qbDepthFactor(ownedQB);
-    const wouldOwn = ownedQB + 1;
-    // Only one extra QB is ever worth blocking with, and only if he's a real
-    // starter - a true backup has no block/trade value no matter how many
-    // rivals technically "need" QB.
-    const eligibleForRescue = wouldOwn === 2 && p.v >= QB_STARTER_MIN_VALUE;
+  function onesieDepthWithRescue(ownedAtPos, p) {
+    const base = onesieDepthFactor(ownedAtPos);
+    const wouldOwn = ownedAtPos + 1;
+    // Only one extra QB/TE is ever worth blocking with, and only if he's a
+    // real starter - a true backup has no block/trade value no matter how
+    // many rivals technically "need" the position.
+    const eligibleForRescue = wouldOwn === 2 && p.v >= ONESIE_STARTER_MIN_VALUE;
     if (!eligibleForRescue) return base;
     const { weak, field } = tradeValue(p);
     return Math.max(base, qbTradeRescue(weak, field));
@@ -777,13 +799,15 @@
     const cuffs = handcuffSet();
     const waivers = state.settings.waivers || 'active';
 
-    // Bye weeks my current starters are off, per position, and how many QBs
-    // I already own (the only position where a depth discount applies).
+    // Bye weeks my current starters are off, per position, and how many
+    // QBs/TEs I already own (the onesie positions where a depth discount
+    // applies).
     const starterByes = {};
-    let ownedQB = 0;
+    let ownedQB = 0, ownedTE = 0;
     for (const pk of picksWithPos(me)) {
       const p = playerById(pk.pid);
       if (p && p.pos === 'QB') ownedQB += 1;
+      if (p && p.pos === 'TE') ownedTE += 1;
       const b = p && byeFor(p);
       if (b) (starterByes[p.pos] = starterByes[p.pos] || []).push(b);
     }
@@ -834,7 +858,9 @@
         bye: r.byeFit,
         scarcity: r.scarcity,
       };
-      const depth = r.p.pos === 'QB' ? qbDepthWithRescue(ownedQB, r.p) : 1;
+      const depth = r.p.pos === 'QB' ? onesieDepthWithRescue(ownedQB, r.p)
+        : r.p.pos === 'TE' ? onesieDepthWithRescue(ownedTE, r.p)
+        : 1;
       map.set(r.p.id, { ...r, parts, score: LineupEngine.benchScore(parts, waivers) * depth });
     }
     benchCache = { key, map };
@@ -918,7 +944,10 @@
 
     const used = new Set();
     const results = new Array(openSlots.length).fill(null);
-    const benchReserve = benchReserveFor(i);
+    // $200 is one pool for all 16 spots - reserve only the bare $1/spot floor
+    // needed to guarantee every bench slot can still be filled, not the
+    // inflated war chest (that's a room-timing readout, not a spending cap).
+    const benchReserve = benchSpotsLeft(i);
     let budget = Math.max(0, teamRemaining(i) - benchReserve);
 
     const skillIdx = [], puntIdx = [];
@@ -1041,7 +1070,6 @@
       floors: ctx.floors,
       pos: p.pos,
       hardMax: teamMaxBid(i),
-      benchReserve: benchReserveFor(i),
     });
   }
 
@@ -1150,7 +1178,6 @@
       floors: ctx.marketFloors,
       pos: p.pos,
       hardMax: teamMaxBid(i),
-      benchReserve: benchReserveFor(i),
     });
   }
 
@@ -1406,8 +1433,13 @@
           : verdict.kind === 'buy' ? `<span class="veg up${verdict.strength === 'strong' ? ' strong' : ''}" title="${tip}">▲${fz.gap}</span>`
           : verdict.kind === 'fade' ? `<span class="veg down${verdict.strength === 'strong' ? ' strong' : ''}" title="${tip}">▼${Math.abs(fz.gap)}</span>`
           : `<span class="veg flat" title="${tip}">≈</span>`;
+        const sr = sosRead(p);
+        const easyBadge = sr && sr.easy
+          ? `<span class="easy-sos" title="Easy ${p.pos} schedule — SOS #${sr.rank} of ${sr.total}">🐇</span> `
+          : '';
         return `<div class="p-row${drafted ? ' drafted' : ''}" data-pid="${p.id}">
           <span class="pos-chip pos-${p.pos}">${p.pos === 'DST' ? 'D' : p.pos}</span>
+          <span class="p-name">${p.target ? '<span class="star">⭐</span> ' : ''}${p.caution ? '<span class="shaky" title="On your caution list">🚧</span> ' : ''}${easyBadge}${p.n}<span class="tm">${p.tm}</span></span>
           <span class="p-name">${p.target ? '<span class="star">⭐</span> ' : ''}${p.caution ? '<span class="shaky" title="On your caution list">🚧</span> ' : ''}${p.n}<span class="tm">${p.tm}</span></span>
           <span class="p-name">${p.target ? '<span class="star">⭐</span> ' : ''}${p.n}<span class="tm">${p.tm}</span></span>
           <span class="p-val">$${anchorValue(p)}</span>
@@ -2389,6 +2421,28 @@
     renderAll();
   }
 
+  function vegasImportSos() {
+    const text = $('#vgSos').value.trim();
+    if (!text) return vegasMsg('Paste SOS ranks first.', true);
+    const { sos, matched, skipped } = VegasEngine.parseSOS(text);
+    if (!matched) return vegasMsg('Could not read any position/team/rank rows out of that.', true);
+    state.sos = state.sos || { QB: {}, RB: {}, WR: {}, TE: {}, K: {}, DST: {} };
+    for (const pos of Object.keys(sos)) {
+      state.sos[pos] = Object.assign({}, state.sos[pos] || {}, sos[pos]);
+    }
+    save();
+    hide('#modalVegas');
+    renderAll();
+    alert(`Imported ${matched} SOS rows${skipped ? ` (${skipped} lines skipped)` : ''}.`);
+  }
+
+  function vegasClearSos() {
+    state.sos = null;
+    save();
+    hide('#modalVegas');
+    renderAll();
+  }
+
   function vegasImport() {
     const csv = $('#vgCsv').value.trim();
     if (!csv) return vegasMsg('Paste some player lines first.', true);
@@ -2842,6 +2896,8 @@
     $('#btnVgImport').addEventListener('click', vegasImport);
     $('#btnVgImportRanks').addEventListener('click', vegasImportRanks);
     $('#btnVgClearRanks').addEventListener('click', vegasClearRanks);
+    $('#btnVgImportSos').addEventListener('click', vegasImportSos);
+    $('#btnVgClearSos').addEventListener('click', vegasClearSos);
 
     $('#btnSlFind').addEventListener('click', findSleeperDrafts);
     $('#btnSlConnect').addEventListener('click', connectSleeper);
